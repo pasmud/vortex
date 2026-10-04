@@ -623,7 +623,15 @@ impl<'a> Parser<'a> {
             if self.at(&Tok::Dot) {
                 let pos = self.pos();
                 self.advance();
-                let name = self.expect_ident("a field or variant name after `.`")?;
+                // `t.0` reads the first element of a tuple, so a number is a
+                // valid name after a dot as well as an identifier.
+                let name = match self.peek().clone() {
+                    Tok::Int(v) => {
+                        self.advance();
+                        v.to_string()
+                    }
+                    _ => self.expect_ident("a field, index or variant name after `.`")?,
+                };
                 e = self.after_dot(pos, e, name)?;
                 continue;
             }

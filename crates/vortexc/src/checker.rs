@@ -254,15 +254,17 @@ impl<'a> Checker<'a> {
         };
         env.pop();
 
-        // A block used where a value is expected must produce a compatible one.
-        // This is checked only where there is something to check against,
-        // because a block statement in statement position produces nothing.
-        if let Some(want) = expected {
+        // A tail expression that is the value of a function body must match the
+        // declared return type. A body with no tail is left alone here, because
+        // a body that ends in `return` has already had every returned value
+        // checked against the signature, and reporting at the block would hide
+        // a more precise error further in.
+        if let (Some(want), Some(tail)) = (expected, &b.tail) {
             if want != &Type::Unit && !self.compatible(want, &result) {
                 return self.error(
-                    b.pos,
+                    tail.pos(),
                     format!(
-                        "this block produces `{}` where `{}` is expected",
+                        "this expression produces `{}` where `{}` is expected",
                         self.name_of(&result),
                         self.name_of(want)
                     ),
@@ -506,6 +508,20 @@ impl<'a> Checker<'a> {
 
             ir::Expr::Field { base, name, pos } => {
                 let b = self.expr(base, env)?;
+                // `t.0` reads a tuple element by position.
+                if let (Type::Tuple(items), Some(index)) = (&b, name.parse::<usize>().ok()) {
+                    return match items.get(index) {
+                        Some(t) => Ok(t.clone()),
+                        None => self.error(
+                            *pos,
+                            format!(
+                                "index {} is past the end of a {} element tuple",
+                                index,
+                                items.len()
+                            ),
+                        ),
+                    };
+                }
                 match b {
                     Type::Named(id) => {
                         let ty = self.decls.field_type(id, name).cloned();
