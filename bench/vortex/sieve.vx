@@ -1,0 +1,58 @@
+// The reference workload, written in Vortex.
+//
+// The same arithmetic, in the same order, as bench/c/sieve.c and
+// bench/rust/src/main.rs. The checksum this prints has to equal theirs, which
+// is `1179908154 3314.003906`, and it does.
+//
+// One detail matters for that. The C baseline accumulates into a `uint32_t`, so
+// the sum wraps at 2^32. Vortex `Int` is 64 bit, so a plain sum does not wrap
+// and gives 142913828922 instead. The loop below masks to 32 bits on every
+// addition, which is what the baseline does, and that is why the two agree.
+// Masking rather than widening is deliberate: a Vortex program that wants the
+// true sum should not have to imitate a C overflow.
+//
+// This uses the two forms stage 3 added: a list of a computed length,
+// `[0; limit + 1]`, and index assignment, `composite[j] = 1`.
+
+// Keeps a value inside 32 bits, the width the baselines accumulate in.
+fn wrap32(n: Int) -> Int {
+    return n % 4294967296;
+}
+
+fn sieve_sum(limit: Int) -> Int {
+    if limit < 2 {
+        return 0;
+    }
+
+    // One flag per number up to the limit, which is why a list of a computed
+    // length is needed here at all.
+    var composite = [0; limit + 1];
+
+    var total = 0;
+    var i = 2;
+    while i <= limit {
+        if composite[i] == 1 {
+            i = i + 1;
+            continue;
+        }
+        // The baselines add in uint32_t, so the sum wraps.
+        total = wrap32(total + i);
+
+        // The inner loop runs only while i squared is within the limit, so the
+        // arithmetic matches the baselines exactly.
+        var j = i * i;
+        while j <= limit {
+            composite[j] = 1;
+            j = j + i;
+        }
+        i = i + 1;
+    }
+
+    total
+}
+
+fn main() -> Int {
+    let s = sieve_sum(2000000);
+    println("checksum " + int_to_string(s));
+    return 0;
+}

@@ -521,16 +521,32 @@ impl<'a> Parser<'a> {
             self.advance();
             let value = self.expr()?;
             return match lhs.kind {
+                // `a[i] = v` stores into a list element.
+                ExprKind::Index(base, index) => match &base.kind {
+                    ExprKind::Ident(name) => Ok(Expr::new(
+                        pos,
+                        ExprKind::Assign {
+                            name: name.to_string(),
+                            index: Some((base, index)),
+                            value: Box::new(value),
+                        },
+                    )),
+                    other => {
+                        let found = describe_expr(other);
+                        self.fail(base.pos, "a name on the left of `[`", &found)
+                    }
+                },
                 ExprKind::Ident(name) => Ok(Expr::new(
                     pos,
                     ExprKind::Assign {
                         name,
+                        index: None,
                         value: Box::new(value),
                     },
                 )),
                 other => {
                     let found = describe_expr(&other);
-                    self.fail(lhs.pos, "a name on the left of `=`", &found)
+                    self.fail(lhs.pos, "a name or an index on the left of `=`", &found)
                 }
             };
         }
@@ -623,7 +639,15 @@ impl<'a> Parser<'a> {
             if self.at(&Tok::Dot) {
                 let pos = self.pos();
                 self.advance();
-                let name = self.expect_ident("a field or variant name after `.`")?;
+                // `t.0` reads the first element of a tuple, so a number is a
+                // valid name after a dot as well as an identifier.
+                let name = match self.peek().clone() {
+                    Tok::Int(v) => {
+                        self.advance();
+                        v.to_string()
+                    }
+                    _ => self.expect_ident("a field, index or variant name after `.`")?,
+                };
                 e = self.after_dot(pos, e, name)?;
                 continue;
             }
@@ -851,19 +875,31 @@ impl<'a> Parser<'a> {
             Tok::LBracket => {
                 self.advance();
                 let mut items = Vec::new();
-                if !self.eat(&Tok::RBracket) {
-                    loop {
-                        items.push(self.expr()?);
-                        if self.eat(&Tok::Comma) {
-                            if self.at(&Tok::RBracket) {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                    self.expect(Tok::RBracket)?;
+                if self.eat(&Tok::RBracket) {
+                    return Ok(Expr::new(pos, ExprKind::Array(items)));
                 }
+                let first = self.expr()?;
+                // `[value; count]` repeats a value to build a list whose length
+                // is only known at run time.
+                if self.eat(&Tok::Semicolon) {
+                    let count = self.expr()?;
+                    self.expect(Tok::RBracket)?;
+                    return Ok(Expr::new(
+                        pos,
+                        ExprKind::Repeat {
+                            value: Box::new(first),
+                            count: Box::new(count),
+                        },
+                    ));
+                }
+                items.push(first);
+                while self.eat(&Tok::Comma) {
+                    if self.at(&Tok::RBracket) {
+                        break;
+                    }
+                    items.push(self.expr()?);
+                }
+                self.expect(Tok::RBracket)?;
                 ExprKind::Array(items)
             }
             other => return self.fail(pos, "an expression", &other.describe()),

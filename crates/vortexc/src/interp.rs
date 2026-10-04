@@ -257,12 +257,12 @@ impl<'a> Vm<'a> {
                 Ok(Flow::Value(Value::Unit))
             }
             ir::Stmt::Return(e) => Ok(Flow::Return(self.eval(e, frame)?.value())),
-            ir::Stmt::Nop(e) => {
+            ir::Stmt::Nop { expr, .. } => {
                 // The expression may contain a `return`, `break` or
                 // `continue`, for instance an `if` used as a statement. Those
                 // must not be discarded, or the statements after the `if`
                 // would run.
-                Ok(self.eval(e, frame)?.into_flow())
+                Ok(self.eval(expr, frame)?.into_flow())
             }
             ir::Stmt::Break => Ok(Flow::Break),
             ir::Stmt::Continue => Ok(Flow::Continue),
@@ -287,7 +287,8 @@ impl<'a> Vm<'a> {
             } => {
                 let it = self.eval(iterable, frame)?.value();
                 let items: Vec<Value> = match it {
-                    Value::Array(items) | Value::Tuple(items) => items,
+                    Value::List(items) => items.lock().expect("a list is not poisoned").clone(),
+                    Value::Tuple(items) => items,
                     Value::Str(text) => text.chars().map(Value::Char).collect(),
                     other => {
                         return Err(RuntimeError::BadControlFlow {
@@ -345,8 +346,8 @@ impl<'a> Vm<'a> {
     /// it.
     fn eval(&mut self, e: &ir::Expr, frame: &mut Frame) -> Result<Eval, RuntimeError> {
         Ok(match e {
-            ir::Expr::Const(c) => Eval::Value(const_value(c)),
-            ir::Expr::Load(slot) => Eval::Value(frame.get(*slot)),
+            ir::Expr::Const { value, .. } => Eval::Value(const_value(value)),
+            ir::Expr::Load { slot, .. } => Eval::Value(frame.get(*slot)),
             ir::Expr::Store { slot, value, .. } => {
                 let v = self.eval(value, frame)?.value();
                 frame.set(*slot, v.clone());
@@ -372,9 +373,87 @@ impl<'a> Vm<'a> {
                 Eval::Value(if *tuple {
                     Value::Tuple(values)
                 } else {
-                    Value::Array(values)
+                    Value::list(values)
                 })
             }
+            // `[value; count]` builds a list whose length is known only at run
+            // time, which is what the benchmark workload needs.
+            ir::Expr::Repeat { value, count, pos } => {
+                let v = self.eval(value, frame)?.value();
+                let n = self.eval(count, frame)?.value();
+                let n = match &n {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(RuntimeError::BadOperands {
+                            op: "a list repeat count".to_string(),
+                            lhs: "an Int".to_string(),
+                            rhs: other.type_name().to_string(),
+                            pos: *pos,
+                        })
+                    }
+                };
+                if n < 0 {
+                    return Err(RuntimeError::BadIndex {
+                        pos: *pos,
+                        detail: format!("cannot build a list of {} elements", n),
+                    });
+                }
+                Eval::Value(Value::list(vec![v; n as usize]))
+            }
+
+            // `a[i] = v` stores into a list element, then writes the changed
+            // list back into the slot that holds it. Without the write back the
+            // store would only change a copy.
+            ir::Expr::IndexStore {
+                slot,
+                index,
+                value,
+                pos,
+            } => {
+                let at = self.eval(index, frame)?.value();
+                let v = self.eval(value, frame)?.value();
+                let at = match &at {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(RuntimeError::BadIndex {
+                            pos: *pos,
+                            detail: format!("an index must be an Int, found {}", other.type_name()),
+                        })
+                    }
+                };
+                if at < 0 {
+                    return Err(RuntimeError::BadIndex {
+                        pos: *pos,
+                        detail: format!("index {} is negative", at),
+                    });
+                }
+                let at = at as usize;
+
+                // The list is mutated through its cell, so the store costs the
+                // same whatever the length of the list. An earlier version read
+                // the list out of the slot, which cloned all of it, making a
+                // sieve quadratic.
+                let cell = match frame.get(*slot) {
+                    Value::List(cell) => cell,
+                    other => {
+                        return Err(RuntimeError::BadIndex {
+                            pos: *pos,
+                            detail: format!("{} cannot be indexed", other.type_name()),
+                        })
+                    }
+                };
+                let mut items = cell.lock().expect("a list is not poisoned");
+                if at >= items.len() {
+                    return Err(RuntimeError::BadIndex {
+                        pos: *pos,
+                        detail: format!("index {} is past the end of {} values", at, items.len()),
+                    });
+                }
+                items[at] = v.clone();
+                drop(items);
+                Eval::Value(v)
+            }
+
             ir::Expr::Index { base, index, pos } => {
                 let b = self.eval(base, frame)?.value();
                 let i = self.eval(index, frame)?.value();
@@ -452,7 +531,7 @@ impl<'a> Vm<'a> {
             }
             ir::Pattern::Literal(c) => &const_value(c) == value,
             ir::Pattern::Tuple(items) => match value {
-                Value::Tuple(values) | Value::Array(values) => {
+                Value::Tuple(values) => {
                     if values.len() != items.len() {
                         return false;
                     }
@@ -840,12 +919,17 @@ fn index_into(base: Value, index: Value, pos: Pos) -> EvalResult {
     }
     let i = i as usize;
     match &base {
-        Value::Array(items) | Value::Tuple(items) => {
+        Value::List(items) => {
+            let items = items.lock().expect("a list is not poisoned");
             items.get(i).cloned().ok_or(RuntimeError::BadIndex {
                 pos,
                 detail: format!("index {} is past the end of {} values", i, items.len()),
             })
         }
+        Value::Tuple(items) => items.get(i).cloned().ok_or(RuntimeError::BadIndex {
+            pos,
+            detail: format!("index {} is past the end of {} values", i, items.len()),
+        }),
         Value::Str(s) => {
             let chars: Vec<char> = s.chars().collect();
             chars
@@ -864,6 +948,24 @@ fn index_into(base: Value, index: Value, pos: Pos) -> EvalResult {
 }
 
 fn read_field(base: Value, name: &str, pos: Pos) -> EvalResult {
+    // A tuple or a variant payload is read by position, as `t.0` and `s.1`.
+    // The parser accepts a number after a dot for exactly this, and the checker
+    // gives the element's type, so the interpreter serves the element here.
+    if let Some(index) = name.parse::<usize>().ok() {
+        let found = match &base {
+            Value::Tuple(items) => items.get(index).cloned(),
+            Value::Variant { args, .. } => args.get(index).cloned(),
+            _ => None,
+        };
+        return match found {
+            Some(v) => Ok(v),
+            None => Err(RuntimeError::UnknownField {
+                name: name.to_string(),
+                pos,
+            }),
+        };
+    }
+
     match &base {
         Value::Struct { fields, .. } => fields
             .iter()
@@ -873,20 +975,6 @@ fn read_field(base: Value, name: &str, pos: Pos) -> EvalResult {
                 name: name.to_string(),
                 pos,
             }),
-        Value::Variant { ty, args, .. } => {
-            // A variant's payloads are read by position, as `s.0` and `s.1`.
-            let found = name
-                .parse::<usize>()
-                .ok()
-                .and_then(|i| args.get(i).cloned());
-            match found {
-                Some(v) => Ok(v),
-                None => Err(RuntimeError::UnknownField {
-                    name: format!("{}.{}", ty, name),
-                    pos,
-                }),
-            }
-        }
         other => Err(RuntimeError::NotAStruct {
             pos,
             found: other.type_name().to_string(),
@@ -903,7 +991,8 @@ pub fn display(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Str(s) => s.clone(),
         Value::Char(c) => c.to_string(),
-        Value::Array(items) => {
+        Value::List(items) => {
+            let items = items.lock().expect("a list is not poisoned");
             let parts: Vec<String> = items.iter().map(display).collect();
             format!("[{}]", parts.join(", "))
         }

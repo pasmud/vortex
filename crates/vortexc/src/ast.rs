@@ -181,10 +181,15 @@ pub enum ExprKind {
     Neg(Box<Expr>),
     /// `!e`
     Not(Box<Expr>),
-    /// `name = value`, which is an expression statement rather than a binary
-    /// operator, because the left side is a name and not a value.
+    /// `name = value` or `a[i] = value`, which is an expression statement
+    /// rather than a binary operator, because the left side is a place and not
+    /// a value.
     Assign {
+        /// The name the target belongs to.
         name: String,
+        /// The index, when the target is a list element rather than the name
+        /// itself.
+        index: Option<(Box<Expr>, Box<Expr>)>,
         value: Box<Expr>,
     },
     /// `lhs op rhs`
@@ -236,6 +241,14 @@ pub enum ExprKind {
     Try(Box<Expr>),
     /// `[a, b, c]`
     Array(Vec<Expr>),
+    /// `[value; count]`, a list of `count` copies of `value`.
+    ///
+    /// This is how a list whose size is only known at run time is built, which
+    /// `SPEC.md` section 8.2 recorded as missing in v0.1.
+    Repeat {
+        value: Box<Expr>,
+        count: Box<Expr>,
+    },
     /// `e[i]`
     Index(Box<Expr>, Box<Expr>),
     /// `e.f`
