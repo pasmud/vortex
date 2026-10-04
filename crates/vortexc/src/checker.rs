@@ -190,7 +190,6 @@ impl<'a> Checker<'a> {
         let mut env = Env {
             scopes: vec![HashMap::new()],
             return_type: Some(sig.ret.clone()),
-            always_returns: true,
             slot_names: HashMap::new(),
             slot_types: HashMap::new(),
         };
@@ -235,19 +234,22 @@ impl<'a> Checker<'a> {
         expected: Option<&Type>,
     ) -> Result<Type, TypeError> {
         env.push();
-        let mut returns = false;
+        // Whether this block ends by returning, or by an if or a match that
+        // returns on every branch. That is what decides whether it can fall off
+        // the end, and a block that cannot is the enclosing return type rather
+        // than `()`.
+        let mut terminates = false;
         for stmt in &b.stmts {
             self.stmt(stmt, env)?;
-            if matches!(stmt, ir::Stmt::Return(_)) {
-                returns = true;
+            if let ir::Stmt::Return(_) = stmt {
+                terminates = true;
             }
         }
         let result = match &b.tail {
-            Some(t) => {
-                returns = false;
-                self.expr(t, env)?
-            }
-            None if returns => env.return_type.clone().unwrap_or(Type::Unit),
+            // A tail expression is the value of the block, whatever the
+            // statements before it did.
+            Some(t) => self.expr(t, env)?,
+            None if terminates => env.return_type.clone().unwrap_or(Type::Unit),
             None => Type::Unit,
         };
         env.pop();
@@ -1052,9 +1054,6 @@ fn builtin_signatures() -> HashMap<String, (Vec<Type>, Type)> {
 struct Env {
     scopes: Vec<HashMap<String, Scoped>>,
     return_type: Option<Type>,
-    /// Whether the statement being checked ends every path with a `return`.
-    /// A block that always returns produces its declared type rather than `()`.
-    always_returns: bool,
     /// The slot each name was given, so a diagnostic can name it.
     slot_names: HashMap<usize, String>,
     /// The type of every slot this function has introduced, so a read after
