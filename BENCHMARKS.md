@@ -1,25 +1,49 @@
 # Vortex benchmarks
 
-## NO VORTEX RESULTS YET
+## NO COMPARABLE VORTEX RESULT YET
 
-There are no Vortex benchmark results in this repository, and this section says
-why rather than leaving it blank.
+There is no Vortex time in the comparison table, and this section says why
+rather than leaving it blank.
 
-Stage 2 has a tree interpreter that runs the programs in `examples/`, but it
-cannot run the benchmark workload. The C and Rust baselines both implement a
-sieve of Eratosthenes over a byte array, and Vortex v0.1 has no index
-assignment, so `a[i] = v` is a parse error, and no list of a computed length, so
-the 2,000,001 element flag array cannot be built at all. `bench/vortex/README.md`
-explains this in full and lists what stage 3 has to do about it.
+A Vortex implementation of the reference workload now exists at
+`bench/vortex/sieve.vx` and it is correct. It cannot supply a comparable time,
+for two reasons that were measured rather than assumed.
 
-The alternative would have been to write a different, weaker algorithm in all
-three languages and put those numbers in one table. That would have produced
-three real measurements that did not measure the same thing, and the table would
-have read as a comparison it could not support. The row stays empty instead.
+**Its checksum does not match the baselines.** The C and Rust rows print
+`checksum 1179908154 3314.003906`, which covers a sieve over 2,000,000 and a
+floating point matrix multiply. Vortex v0.1 cannot write the matrix half: there
+is no `as` cast yet and `SPEC.md` section 6.1 rule 4 forbids the implicit
+conversion from `Int` to `Float`. The Vortex program therefore prints a sieve
+checksum only, and a row whose checksum differs from the other two would not be
+a comparison.
+
+**The sieve half is too slow in a tree interpreter to run the workload.** These
+were measured on the machine below with
+`cargo run --release --example run_example`:
+
+| Limit | Sum of primes | Time |
+| --- | --- | --- |
+| 100 | 1060 | not timed |
+| 1000 | 76127 | not timed |
+| 10000 | 5736396 | 3676 ms |
+| 20000 | 21171191 | 15862 ms |
+
+Doubling the limit from 10,000 to 20,000 took the time from 3.7 seconds to 15.9
+seconds, so the cost grows faster than the limit, because the sieve's own work
+grows with it. The baseline uses 2,000,000, which is two orders of magnitude
+beyond a size that already takes sixteen seconds. Running it was attempted and
+timed out, at 2,000,000 and again at 100,000, the latter after four minutes
+with no output.
+
+These four numbers are measurements of one Vortex program. They are **not** a
+comparison with C or Rust, because no C or Rust run of the same program exists,
+and they are not in the comparison table. `bench/vortex/README.md` records them
+with the reasoning.
 
 No number in this file is estimated, projected or carried over from another
-project. When results are added, they come from an actual run of `bench/run.sh`
-on a machine recorded in this file, with the raw output committed alongside.
+project. When a Vortex result is added, it comes from an actual run of
+`bench/run.sh` on a machine recorded in this file, with the raw output committed
+alongside, and its checksum must equal the baselines'.
 
 ## The rule for adding results
 

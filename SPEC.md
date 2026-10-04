@@ -305,21 +305,30 @@ A `for` loop comes in two forms. `for x in a..=b` counts, and `for x in e` walks
 a list, a tuple or a string. The loop variable is scoped to the loop, so it is
 not visible after it.
 
-### 8.2 What v0.1 cannot write
+### 8.2 What v0.1 can and cannot write
 
-Stated here so a reader is not surprised, because each of these is a gap a
-programmer will meet immediately.
+Stated here so a reader is not surprised, because each of these was met while
+building the benchmark workload.
 
-- **There is no index assignment.** `a[i] = v` is a parse error. The only
-  assignable names are `var` bindings, and a `var` is a whole value, not a list
-  element. This is why `bench/vortex` has no program; see the note there.
-- **There is no list of a computed length.** A list literal lists its elements,
-  `[2, 3, 5]`. There is no `[0; n]` form, so a list whose size is only known at
-  run time cannot be built.
+- **Index assignment works.** `a[i] = v` is legal when `a` was declared with
+  `var`, because the store changes the list itself. Assigning into a `let`
+  binding is an error. The index must be an `Int`, the value must match the
+  element type of the list, and an index past the end is a run time error
+  naming the index and the length.
+- **A list of a computed length works.** `[value; count]` builds a list of
+  `count` copies of `value`. The count must be an `Int` and the type of the
+  list is the type of the repeated value, so every element still has one type.
 - **There is no `as` cast.** Section 6.1 rule 4 and section 6.3 both refer to
-  one, and it arrives with the type checker in stage 3.
+  one. Until it exists there is no way between an `Int` and a `Float`, which
+  is why `bench/vortex` cannot yet write the floating point half of the
+  benchmark workload.
 - **There is no `Option` or `Result` construction.** Rules 5 and 6 of section
-  6.1 describe them; the `none`, `some`, `ok` and `err` forms arrive in stage 3.
+  6.1 describe them. `?` is accepted by the parser and typed by the checker,
+  but there is no way to write `none`, `some`, `ok` or `err` yet.
+- **No generics and no traits.** Section 6.3 describes monomorphisation, and
+  the parser has no generic syntax, so nothing about it is implemented.
+- **Move semantics are not yet checked.** Section 7 states a move model, but a
+  use after a move still compiles. That is stage 5 work.
 
 Modules come later. `import` is reserved in v0.1 so that adding it does not
 break programs.
@@ -341,12 +350,13 @@ The optimisation strategy for the stages ahead is:
 3. Measure before adopting an optimisation, and require that it does not
    regress another benchmark.
 
-`BENCHMARKS.md` contains **no Vortex results**. Stage 2 has a tree
-interpreter, but Vortex cannot yet write the benchmark workload, because there
-is no index assignment and no list of a computed length. `bench/vortex/README.md`
-records that, and it also holds the measurements taken while deciding whether a
-Vortex row was worth attempting. Nothing in this repository claims a Vortex speed
-result until one is measured.
+`BENCHMARKS.md` contains **no comparable Vortex result**. Stage 3 writes the
+sieve in Vortex and it is correct, but it cannot supply a time for two measured
+reasons: the baseline checksum covers a floating point half that Vortex cannot
+write yet, because there is no `as` cast, and the sieve half is too slow in a
+tree interpreter to reach the baseline's limit. `bench/vortex/README.md` records
+the measurements. Nothing in this repository claims a Vortex speed result until
+one is measured.
 
 ## 10. Stage plan
 

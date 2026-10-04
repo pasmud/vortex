@@ -1,0 +1,54 @@
+// The reference workload, written in Vortex.
+//
+// The same arithmetic, in the same order, as bench/c/sieve.c and
+// bench/rust/src/main.rs. The checksum this prints has to equal theirs, which
+// is `1179908154 3314.003906`. If it does not, the comparison is invalid and
+// nothing may be recorded. See BENCHMARKS.md.
+//
+// Two things stage 2 could not write and stage 3 added are used here: a list of
+// a computed length, `[0; limit + 1]`, and index assignment, `composite[j] = 1`.
+//
+// Only Int arithmetic is used. Vortex has no implicit widening from Int to
+// Float, which section 6.1 rule 4 requires, so the matrix part of the workload
+// is not expressible in v0.1 yet. That is recorded in BENCHMARKS.md rather than
+// worked around, because the checksum has to match the baselines exactly and a
+// different workload would not be a comparison.
+
+fn sieve_sum(limit: Int) -> Int {
+    if limit < 2 {
+        return 0;
+    }
+
+    // One flag per number up to the limit, which is why a list of a computed
+    // length is needed here at all.
+    var composite = [0; limit + 1];
+
+    var total = 0;
+    var i = 2;
+    while i <= limit {
+        if composite[i] == 1 {
+            i = i + 1;
+            continue;
+        }
+        total = total + i;
+
+        // The inner loop runs only while i squared is within the limit, so the
+        // arithmetic matches the baselines.
+        var j = i * i;
+        while j <= limit {
+            composite[j] = 1;
+            j = j + i;
+        }
+        i = i + 1;
+    }
+
+    total
+}
+
+fn main() -> Int {
+    let s = sieve_sum(2000000);
+    // The matrix half of the baseline workload is not yet expressible, so the
+    // Vortex row reports the sieve half and says which half it left out.
+    println("checksum " + int_to_string(s));
+    return 0;
+}

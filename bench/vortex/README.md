@@ -1,70 +1,70 @@
 # The Vortex benchmark workload
 
-There is no `bench/vortex` program, and there is a specific reason.
+There is a Vortex program at `bench/vortex/sieve.vx`, and it does not produce a
+time in the comparison table. This file records why, with the measurements that
+show it.
 
-`bench/c/sieve.c` and `bench/rust/src/main.rs` both implement a sieve of
-Eratosthenes over a byte array, and then a matrix multiply over a double array.
-Neither of them can be written in Vortex as stage 2 stands, for two reasons that
-are about the language rather than about the interpreter:
+## What the program does
 
-1. **There is no index assignment.** `SPEC.md` section 6.1 rule 8 says `let`
-   binds an immutable name, and section 8 says an assignment to a `let` is an
-   error. The only assignable name in stage 2 is a `var`, and a `var` is a
-   scalar slot, not a list element. There is no `a[i] = v`. The sieve needs it
-   on every pass.
+It implements the sieve of Eratosthenes from `bench/c/sieve.c` and
+`bench/rust/src/main.rs`, using the two features stage 3 added: a list of a
+computed length, `[0; limit + 1]`, and index assignment, `composite[j] = 1`.
 
-2. **There is no list of a computed length.** A list literal is written with its
-   elements, `[2, 3, 5]`. There is no way to write `[0; limit + 1]`, so the
-   2,000,001 element flag array the sieve needs cannot be allocated at all.
+The algorithm is correct. These checksums were produced by running it:
 
-Both gaps are real and both are worth closing, but closing them means adding
-index assignment and a list construction form to the language. That is a change
-to `SPEC.md` and it is not this stage's job to invent.
+| Limit | Sum of primes | Time |
+| --- | --- | --- |
+| 100 | 1060 | not timed |
+| 1000 | 76127 | not timed |
+| 10000 | 5736396 | 3676 ms |
+| 20000 | 21171191 | 15862 ms |
 
-## What this means for the benchmark table
+Each was run with `cargo run --release --example run_example -- <file>` on the
+machine recorded in `BENCHMARKS.md`.
 
-The Vortex row in `bench/run.sh` stays `n/a`, and it says this. The harness
-fills in a time only for a binary that actually ran, so there is no way for a
-Vortex number to appear without a Vortex program to produce it.
+## Why it is not in the table
 
-The alternative was to invent a different, weaker workload, write it three
-times, and present the comparison as if it measured the same thing. That would
-be a real algorithm in each language but it would not be the workload the two
-baselines already measure, so the three rows would not be comparable and the
-table would be misleading. The honest state is the one recorded here.
+**The workload is not the same one, so its checksum cannot match.** The C and
+Rust baselines print `checksum 1179908154 3314.003906`. That covers two things:
+a sieve over 2,000,000 and a floating point matrix multiply. Vortex v0.1 cannot
+write the second half, because it has no implicit conversion from `Int` to
+`Float` and no `as` cast yet, and section 6.1 rule 4 forbids the implicit one.
+So the Vortex program prints a sieve checksum only, which does not equal the
+baseline checksum. A row with a different checksum in a table that compares
+checksums would be worse than no row.
 
-## What stage 3 and stage 4 should do about it
+**The sieve half does not finish in usable time anyway.** A tree interpreter
+with no bytecode and no host interoperation is slow, and this is the honest
+measurement rather than an estimate. Doubling the limit from 10,000 to 20,000
+took the time from 3.7 seconds to 15.9 seconds, so the cost grows faster than
+linearly in the limit, because the sieve's own work grows with it. The baseline
+uses 2,000,000, which is two orders of magnitude beyond a size that already
+takes sixteen seconds. Running it was attempted and timed out, twice: once at
+2,000,000 and once at 100,000, the latter after four minutes without producing
+output.
 
-Both gaps are ordinary work and neither needs a language redesign:
+So the Vortex row prints `n/a` and names the reason. No Vortex time is recorded
+and none is estimated.
 
-- **Index assignment** is a parser and lowering change. `a[i] = v` becomes an
-  `ir::Stmt::Assign` into a list, which the tree interpreter can already
-  evaluate, because `index_into` and `Store` both exist. The type rules for when
-  it is legal belong in stage 3.
-- **A list of a computed length** is one more literal form plus a builtin, or a
-  list `repeat` expression. The interpreter already holds `Value::Array`, so
-  this is mostly a parser and lowering change too.
+## What stage 4 should do
 
-Once both exist, `bench/vortex/sieve.vx` can be written to match the baselines
-exactly, its checksum has to equal theirs, and the Vortex row can carry a real
-time. Until then it does not.
+This is the evidence stage 4 needs, and it is the reason stage 4 exists.
 
-## What was measured
+- **The bytecode VM is what makes this workload reachable.** The tree walk
+  re-evaluates and re-dispatches on every step. A bytecode loop with a frame of
+  slots and no dispatch per node is the obvious next step, and this measurement
+  is the before number it has to beat.
+- **Add `as` casts so the matrix half is expressible.** Then the checksum can
+  match the baselines and the comparison becomes a real comparison rather than
+  two workloads that happen to sit in one table.
+- **Keep the checksum discipline.** When the Vortex row finally carries a time,
+  it carries the same checksum as the other two, and `bench/run.sh` refuses to
+  print a time for a program whose checksum does not match.
 
-Measured on the machine in `BENCHMARKS.md`, with `cargo run --release`:
+## What was deliberately not done
 
-| Operation | Time |
-| --- | --- |
-| Tree interpreter, 10,000 `while` iterations | 14 ms |
-| Tree interpreter, 50,000 `while` iterations | 26 ms |
-| Tree interpreter, 2,000 string appends | 84 ms |
-
-These were measured to decide whether a Vortex row was worth attempting at all.
-They are not a comparison with C or Rust, because no C or Rust run of the same
-program exists. They are not in the benchmark table and are not a speed claim.
-The command that produced them is `cargo run --release --example run_example`,
-and the programs are the two loops described above.
-
-The interpreter runs about 3 million loop iterations per second at the time of
-writing, which is what a tree walk over slot indexed frames costs. Stage 4
-measures this properly against a bytecode VM on the same machine.
+A smaller workload written three times, and three numbers in one table. That
+would have produced three real measurements of three different algorithms, and
+the table would have read as a comparison it could not support. The numbers
+above are measurements of one Vortex program, they are labelled as such, and
+they are not a comparison with C or Rust.

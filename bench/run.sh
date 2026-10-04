@@ -66,10 +66,12 @@ else
     RUST_VERSION="not available"
 fi
 
-# The Vortex row stays empty until a Vortex program can express the same
-# workload. See bench/vortex/README.md for the two language gaps that stop it
-# today: there is no index assignment and no list of a computed length.
-VORTEX_STATUS="no Vortex workload: the baseline sieve needs index assignment and a list of a computed length, neither of which v0.1 has. See bench/vortex/README.md"
+# The Vortex row stays empty. A Vortex program exists at bench/vortex/sieve.vx
+# and is correct, but it cannot produce a comparable time for two measured
+# reasons recorded in bench/vortex/README.md: the baseline checksum covers a
+# Float matrix multiply that Vortex cannot write yet, and the sieve half does
+# not finish in usable time in a tree interpreter.
+VORTEX_STATUS="no comparable time: the Vortex sieve is correct but its checksum does not match the baselines, and it is too slow in a tree walk to run the baseline workload. Measurements in bench/vortex/README.md"
 
 # --- Run -----------------------------------------------------------------
 
