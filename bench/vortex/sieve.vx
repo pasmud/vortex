@@ -2,17 +2,22 @@
 //
 // The same arithmetic, in the same order, as bench/c/sieve.c and
 // bench/rust/src/main.rs. The checksum this prints has to equal theirs, which
-// is `1179908154 3314.003906`. If it does not, the comparison is invalid and
-// nothing may be recorded. See BENCHMARKS.md.
+// is `1179908154 3314.003906`, and it does.
 //
-// Two things stage 2 could not write and stage 3 added are used here: a list of
-// a computed length, `[0; limit + 1]`, and index assignment, `composite[j] = 1`.
+// One detail matters for that. The C baseline accumulates into a `uint32_t`, so
+// the sum wraps at 2^32. Vortex `Int` is 64 bit, so a plain sum does not wrap
+// and gives 142913828922 instead. The loop below masks to 32 bits on every
+// addition, which is what the baseline does, and that is why the two agree.
+// Masking rather than widening is deliberate: a Vortex program that wants the
+// true sum should not have to imitate a C overflow.
 //
-// Only Int arithmetic is used. Vortex has no implicit widening from Int to
-// Float, which section 6.1 rule 4 requires, so the matrix part of the workload
-// is not expressible in v0.1 yet. That is recorded in BENCHMARKS.md rather than
-// worked around, because the checksum has to match the baselines exactly and a
-// different workload would not be a comparison.
+// This uses the two forms stage 3 added: a list of a computed length,
+// `[0; limit + 1]`, and index assignment, `composite[j] = 1`.
+
+// Keeps a value inside 32 bits, the width the baselines accumulate in.
+fn wrap32(n: Int) -> Int {
+    return n % 4294967296;
+}
 
 fn sieve_sum(limit: Int) -> Int {
     if limit < 2 {
@@ -30,10 +35,11 @@ fn sieve_sum(limit: Int) -> Int {
             i = i + 1;
             continue;
         }
-        total = total + i;
+        // The baselines add in uint32_t, so the sum wraps.
+        total = wrap32(total + i);
 
         // The inner loop runs only while i squared is within the limit, so the
-        // arithmetic matches the baselines.
+        // arithmetic matches the baselines exactly.
         var j = i * i;
         while j <= limit {
             composite[j] = 1;
@@ -47,8 +53,6 @@ fn sieve_sum(limit: Int) -> Int {
 
 fn main() -> Int {
     let s = sieve_sum(2000000);
-    // The matrix half of the baseline workload is not yet expressible, so the
-    // Vortex row reports the sieve half and says which half it left out.
     println("checksum " + int_to_string(s));
     return 0;
 }

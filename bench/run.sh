@@ -71,7 +71,20 @@ fi
 # reasons recorded in bench/vortex/README.md: the baseline checksum covers a
 # Float matrix multiply that Vortex cannot write yet, and the sieve half does
 # not finish in usable time in a tree interpreter.
-VORTEX_STATUS="no comparable time: the Vortex sieve is correct but its checksum does not match the baselines, and it is too slow in a tree walk to run the baseline workload. Measurements in bench/vortex/README.md"
+# The Vortex workload is run through the interpreter, so it needs the compiler
+# built first and a small runner to feed it the program.
+VORTEX_STATUS="skipped: no cargo found"
+if command -v cargo >/dev/null 2>&1; then
+    cargo build --release --quiet --manifest-path "$ROOT/Cargo.toml" --example run_example
+    VORTEX_BIN="$ROOT/target/release/examples/run_example"
+    if [ ! -x "$VORTEX_BIN" ]; then
+        VORTEX_STATUS="skipped: the Vortex runner did not build"
+    elif [ ! -f "$ROOT/bench/vortex/sieve.vx" ]; then
+        VORTEX_STATUS="skipped: bench/vortex/sieve.vx is missing"
+    else
+        VORTEX_STATUS="built"
+    fi
+fi
 
 # --- Run -----------------------------------------------------------------
 
@@ -121,6 +134,46 @@ run_one() {
     printf '%-10s %-22s %s\n' "$_label" "$_best ms" "$_checksum"
 }
 
+# Runs the Vortex workload REPEATS times and reports the fastest, but only when
+# its checksum equals the baseline on every run. A row is only ever filled in by
+# work that actually ran and matched.
+run_vortex() {
+    _want=$1
+    _best=""
+    _seen=""
+    _i=0
+    while [ "$_i" -lt "$REPEATS" ]; do
+        _start=$(date +%s%N)
+        _out=$("$VORTEX_BIN" "$ROOT/bench/vortex/sieve.vx" 2>/dev/null) || {
+            printf '%-10s %-22s %s' "Vortex" "error" "the workload exited non-zero"
+            return 0
+        }
+        _end=$(date +%s%N)
+        _elapsed=$(awk -v a="$_start" -v b="$_end" 'BEGIN { printf "%d", (b - a) / 1000000 }')
+
+        _checksum=$(printf '%s\n' "$_out" | sed -n 's/^checksum \([0-9][0-9]*\).*/\1/p')
+        if [ -z "$_checksum" ]; then
+            printf '%-10s %-22s %s' "Vortex" "error" "the workload printed no checksum"
+            return 0
+        fi
+        if [ "$_checksum" != "$_want" ]; then
+            printf '%-10s %-22s %s' "Vortex" "n/a" \
+                "checksum $_checksum does not match the baseline $_want"
+            return 0
+        fi
+        _seen="checksum $_checksum"
+
+        if [ -z "$_best" ]; then
+            _best=$_elapsed
+        else
+            _best=$(awk -v a="$_best" -v b="$_elapsed" 'BEGIN { print (b < a ? b : a) }')
+        fi
+        _i=$((_i + 1))
+    done
+
+    printf '%-10s %-22s %s' "Vortex" "$_best ms" "$_seen"
+}
+
 echo
 echo "Vortex benchmark harness"
 echo "========================"
@@ -133,7 +186,30 @@ printf '%-10s %-22s %s\n' "--------" "----------" "--------"
 
 run_one "C" "$BUILD/c_sieve" "$C_STATUS"
 run_one "Rust" "$BUILD/rust_bench" "$RUST_STATUS"
-printf '%-10s %-22s %s\n' "Vortex" "n/a" "$VORTEX_STATUS"
+
+# The Vortex row only gets a time if its checksum equals the baseline checksum.
+# A row that measured a different workload would look like evidence and be
+# none, so the harness refuses to print one.
+VORTEX_ROW=""
+if [ "$VORTEX_STATUS" = "built" ]; then
+    BASELINE_CHECKSUM=$(
+        "$BUILD/c_sieve" 2>/dev/null | sed -n 's/^checksum \([0-9][0-9]*\).*/\1/p'
+    )
+    VORTEX_CHECKSUM=$("$VORTEX_BIN" "$ROOT/bench/vortex/sieve.vx" 2>/dev/null \
+        | sed -n 's/^checksum \([0-9][0-9]*\).*/\1/p')
+
+    if [ -z "$VORTEX_CHECKSUM" ]; then
+        VORTEX_ROW=$(printf '%-10s %-22s %s' "Vortex" "n/a" "the workload printed no checksum")
+    elif [ "$VORTEX_CHECKSUM" != "$BASELINE_CHECKSUM" ]; then
+        VORTEX_ROW=$(printf '%-10s %-22s %s' "Vortex" "n/a" \
+            "checksum $VORTEX_CHECKSUM does not match the baseline $BASELINE_CHECKSUM")
+    else
+        VORTEX_ROW=$(run_vortex "$BASELINE_CHECKSUM")
+    fi
+else
+    VORTEX_ROW=$(printf '%-10s %-22s %s' "Vortex" "n/a" "$VORTEX_STATUS")
+fi
+printf '%s\n' "$VORTEX_ROW"
 
 echo
 echo "Toolchain used for this run"

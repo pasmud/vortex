@@ -287,7 +287,8 @@ impl<'a> Vm<'a> {
             } => {
                 let it = self.eval(iterable, frame)?.value();
                 let items: Vec<Value> = match it {
-                    Value::Array(items) | Value::Tuple(items) => items,
+                    Value::List(items) => items.lock().expect("a list is not poisoned").clone(),
+                    Value::Tuple(items) => items,
                     Value::Str(text) => text.chars().map(Value::Char).collect(),
                     other => {
                         return Err(RuntimeError::BadControlFlow {
@@ -372,7 +373,7 @@ impl<'a> Vm<'a> {
                 Eval::Value(if *tuple {
                     Value::Tuple(values)
                 } else {
-                    Value::Array(values)
+                    Value::list(values)
                 })
             }
             // `[value; count]` builds a list whose length is known only at run
@@ -397,7 +398,7 @@ impl<'a> Vm<'a> {
                         detail: format!("cannot build a list of {} elements", n),
                     });
                 }
-                Eval::Value(Value::Array(vec![v; n as usize]))
+                Eval::Value(Value::list(vec![v; n as usize]))
             }
 
             // `a[i] = v` stores into a list element, then writes the changed
@@ -409,7 +410,6 @@ impl<'a> Vm<'a> {
                 value,
                 pos,
             } => {
-                let mut list = frame.get(*slot);
                 let at = self.eval(index, frame)?.value();
                 let v = self.eval(value, frame)?.value();
                 let at = match &at {
@@ -428,8 +428,13 @@ impl<'a> Vm<'a> {
                     });
                 }
                 let at = at as usize;
-                let items = match &mut list {
-                    Value::Array(items) => items,
+
+                // The list is mutated through its cell, so the store costs the
+                // same whatever the length of the list. An earlier version read
+                // the list out of the slot, which cloned all of it, making a
+                // sieve quadratic.
+                let cell = match frame.get(*slot) {
+                    Value::List(cell) => cell,
                     other => {
                         return Err(RuntimeError::BadIndex {
                             pos: *pos,
@@ -437,6 +442,7 @@ impl<'a> Vm<'a> {
                         })
                     }
                 };
+                let mut items = cell.lock().expect("a list is not poisoned");
                 if at >= items.len() {
                     return Err(RuntimeError::BadIndex {
                         pos: *pos,
@@ -444,8 +450,7 @@ impl<'a> Vm<'a> {
                     });
                 }
                 items[at] = v.clone();
-                // Write the changed list back, or the store only touched a copy.
-                frame.set(*slot, list);
+                drop(items);
                 Eval::Value(v)
             }
 
@@ -526,7 +531,7 @@ impl<'a> Vm<'a> {
             }
             ir::Pattern::Literal(c) => &const_value(c) == value,
             ir::Pattern::Tuple(items) => match value {
-                Value::Tuple(values) | Value::Array(values) => {
+                Value::Tuple(values) => {
                     if values.len() != items.len() {
                         return false;
                     }
@@ -914,12 +919,17 @@ fn index_into(base: Value, index: Value, pos: Pos) -> EvalResult {
     }
     let i = i as usize;
     match &base {
-        Value::Array(items) | Value::Tuple(items) => {
+        Value::List(items) => {
+            let items = items.lock().expect("a list is not poisoned");
             items.get(i).cloned().ok_or(RuntimeError::BadIndex {
                 pos,
                 detail: format!("index {} is past the end of {} values", i, items.len()),
             })
         }
+        Value::Tuple(items) => items.get(i).cloned().ok_or(RuntimeError::BadIndex {
+            pos,
+            detail: format!("index {} is past the end of {} values", i, items.len()),
+        }),
         Value::Str(s) => {
             let chars: Vec<char> = s.chars().collect();
             chars
@@ -981,7 +991,8 @@ pub fn display(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Str(s) => s.clone(),
         Value::Char(c) => c.to_string(),
-        Value::Array(items) => {
+        Value::List(items) => {
+            let items = items.lock().expect("a list is not poisoned");
             let parts: Vec<String> = items.iter().map(display).collect();
             format!("[{}]", parts.join(", "))
         }

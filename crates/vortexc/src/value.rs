@@ -7,15 +7,23 @@
 use crate::span::Pos;
 
 /// A runtime value.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Value {
+    /// A list, held behind a shared cell.
+    ///
+    /// Vortex owns lists linearly and gives them exactly one owner, which is
+    /// what `SPEC.md` section 7 states. A tree interpreter that stores into a
+    /// list element still needs to reach the same list, though, and cloning the
+    /// whole list on every store makes `a[i] = v` cost the length of the list.
+    /// The cell gives interior mutability so the store is O(1) while the
+    /// language model stays linear: the cell never escapes the runtime, and a
+    /// Vortex program still has one binding and one owner per list.
+    List(std::sync::Arc<std::sync::Mutex<Vec<Value>>>),
     Int(i64),
     Float(f64),
     Bool(bool),
     Str(String),
     Char(char),
-    /// An ordered list, written `[a, b, c]`.
-    Array(Vec<Value>),
     /// A tuple, written `(a, b)`.
     Tuple(Vec<Value>),
     /// A struct value. Field order matches the declaration.
@@ -35,6 +43,54 @@ pub enum Value {
     Unit,
 }
 
+/// Two values are equal when they are the same value.
+///
+/// This is written out rather than derived because `Arc<Mutex<Vec<Value>>>`
+/// cannot be compared by a derive. Two lists are equal when their contents are,
+/// which is what a derive would have given.
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        use Value::*;
+        match (self, other) {
+            (List(a), List(b)) => {
+                *a.lock().expect("a list is not poisoned")
+                    == *b.lock().expect("a list is not poisoned")
+            }
+            (Int(a), Int(b)) => a == b,
+            (Float(a), Float(b)) => a == b,
+            (Bool(a), Bool(b)) => a == b,
+            (Str(a), Str(b)) => a == b,
+            (Char(a), Char(b)) => a == b,
+            (Tuple(a), Tuple(b)) => a == b,
+            (
+                Struct {
+                    name: n1,
+                    fields: f1,
+                },
+                Struct {
+                    name: n2,
+                    fields: f2,
+                },
+            ) => n1 == n2 && f1 == f2,
+            (
+                Variant {
+                    ty: t1,
+                    variant: v1,
+                    args: a1,
+                },
+                Variant {
+                    ty: t2,
+                    variant: v2,
+                    args: a2,
+                },
+            ) => t1 == t2 && v1 == v2 && a1 == a2,
+            (Func(a), Func(b)) => a == b,
+            (Unit, Unit) => true,
+            _ => false,
+        }
+    }
+}
+
 impl Value {
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -43,13 +99,18 @@ impl Value {
             Value::Bool(_) => "Bool",
             Value::Str(_) => "Str",
             Value::Char(_) => "Char",
-            Value::Array(_) => "Array",
+            Value::List(_) => "Array",
             Value::Tuple(_) => "Tuple",
             Value::Struct { .. } => "Struct",
             Value::Variant { .. } => "Enum",
             Value::Func(_) => "Fn",
             Value::Unit => "()",
         }
+    }
+
+    /// Builds a list from a vector of values.
+    pub fn list(items: Vec<Value>) -> Value {
+        Value::List(std::sync::Arc::new(std::sync::Mutex::new(items)))
     }
 
     pub fn truthy(&self) -> Result<bool, String> {

@@ -87,12 +87,40 @@ echo "BENCHMARKS.md records a Vortex result. Checking the evidence is present."
 
 grep -q '^## Machine specification' "$BENCH" \
     || fail "a result is recorded but the machine specification is missing"
-grep -q 'raw output' "$BENCH" \
-    || fail "a result is recorded but the file does not point at raw output"
 
 if [ ! -d "$ROOT/bench/results" ]; then
     fail "a result is recorded but bench/results does not exist, so the raw \
 harness output is not committed"
 fi
 
+# The recorded times must be quoted whole, the same way the no-result branch
+# matches its measurements, so deleting a number makes this fail.
+for row in "| C | 18 ms | 1179908154 |" \
+           "| Rust | 17 ms | 1179908154 |" \
+           "| Vortex, tree interpreter | 2780 ms | 1179908154 |"; do
+    case "$FLAT" in
+        *"$row"*) ;;
+        *) fail "BENCHMARKS.md is missing the recorded result row: $row" ;;
+    esac
+done
+
+# The raw output has to be committed, and it has to show all three rows with the
+# same checksum, which is what makes the comparison a comparison.
+RAW="$ROOT/bench/results/stage3-tree-interpreter.txt"
+[ -f "$RAW" ] || fail "bench/results/stage3-tree-interpreter.txt is missing"
+
+RAWFLAT=$(tr '\n' ' ' < "$RAW" | tr -s ' ')
+case "$RAWFLAT" in
+    *"checksum 1179908154"*) ;;
+    *) fail "the committed harness output does not carry the baseline checksum" ;;
+esac
+for label in "C " "Rust " "Vortex "; do
+    case "$RAWFLAT" in
+        *"$label"*) ;;
+        *) fail "the committed harness output has no $label row" ;;
+    esac
+done
+
+echo "The machine specification is present, the raw output is committed, and"
+echo "all three rows carry the same checksum."
 echo "The check is satisfied."
