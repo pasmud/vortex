@@ -372,6 +372,8 @@ impl<'a> Vm<'a> {
                         Flow::Continue => frame.flow = Flow::Normal,
                         Flow::Normal => {}
                     }
+                    // The body leaves its value behind, so it is dropped here.
+                    frame.pop();
                 }
             }
         }
