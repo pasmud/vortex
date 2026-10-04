@@ -34,6 +34,12 @@ jobs:
       - name: Run the test suite
         run: cargo test --workspace
 
+      - name: Run the interpreter suite against the VM
+        # The stage 2 and 3 expectations are run a second time against the
+        # virtual machine, so both engines are checked against the same
+        # expectations rather than the VM getting a weaker set of its own.
+        run: VORTEX_ENGINE=vm cargo test --workspace
+
       - name: Check formatting
         run: cargo fmt --all --check
 

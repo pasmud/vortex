@@ -43,6 +43,11 @@ The test command for the whole repository is:
 
     cargo test --workspace
 
+The interpreter suite runs a second time against the virtual machine, so both
+engines are checked against the same expectations:
+
+    VORTEX_ENGINE=vm cargo test --workspace
+
 Run the benchmark harness with:
 
     bench/run.sh
