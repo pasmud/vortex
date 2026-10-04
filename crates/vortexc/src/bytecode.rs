@@ -218,6 +218,7 @@ fn function(f: &ir::Fn) -> Result<Code, CompileError> {
         instrs: Vec::new(),
         loop_base: f.frame_size,
         loops: 0,
+        exits: Vec::new(),
     };
 
     for stmt in &f.body.stmts {
@@ -236,8 +237,22 @@ fn function(f: &ir::Fn) -> Result<Code, CompileError> {
     })
 }
 
+/// Which kind of loop exit a jump is.
+///
+/// A `continue` has to run the counter increment and a `break` has to skip it,
+/// so the two land in different places and the compiler has to know which is
+/// which while it patches them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitKind {
+    Break,
+    Continue,
+}
+
 struct FnCompiler {
     instrs: Vec<Instr>,
+    /// The jump of each `break` or `continue` in the loop currently being
+    /// compiled, one list per open loop so a nested loop keeps its own.
+    exits: Vec<Vec<(usize, ExitKind)>>,
     /// The first slot a loop over a list may use.
     loop_base: usize,
     /// How many such loops are currently open, so a nested loop gets its own
@@ -248,6 +263,48 @@ struct FnCompiler {
 impl FnCompiler {
     fn emit(&mut self, op: Op, pos: Pos) {
         self.instrs.push(Instr { op, pos });
+    }
+
+    /// Records a break or continue jump for the innermost open loop.
+    fn pending_exit(&mut self, at: usize, kind: ExitKind) {
+        if let Some(loop_exits) = self.exits.last_mut() {
+            loop_exits.push((at, kind));
+        }
+    }
+
+    /// Points every `continue` of the innermost loop at its EndLoop, so the
+    /// counter has already moved when the flag is consumed.
+    fn close_continues(&mut self, target: usize) {
+        if let Some(loop_exits) = self.exits.last_mut() {
+            let continues: Vec<usize> = loop_exits
+                .iter()
+                .filter(|(_, kind)| *kind == ExitKind::Continue)
+                .map(|(at, _)| *at)
+                .collect();
+            for at in continues {
+                if let Op::Jump(t) = &mut self.instrs[at].op {
+                    if *t == usize::MAX {
+                        *t = target;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Points every `break` of the innermost loop past the increment, and
+    /// forgets the loop's exits.
+    fn close_breaks(&mut self, target: usize) {
+        if let Some(loop_exits) = self.exits.pop() {
+            for (at, kind) in loop_exits {
+                if kind == ExitKind::Break {
+                    if let Op::Jump(t) = &mut self.instrs[at].op {
+                        if *t == usize::MAX {
+                            *t = target;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// The instruction index just past everything emitted so far, which is
@@ -292,8 +349,19 @@ impl FnCompiler {
                 self.expr(expr)?;
                 self.emit(Op::Pop, *pos);
             }
-            ir::Stmt::Break => self.emit(Op::Break, Pos::START),
-            ir::Stmt::Continue => self.emit(Op::Continue, Pos::START),
+            ir::Stmt::Break => {
+                let at = self.emit_at(Op::Break, Pos::START);
+                // Nothing jumps on a flag alone, so the rest of the body would
+                // still run. Both exit instructions jump to the loop's EndLoop,
+                // which is what consumes the flag.
+                self.emit(Op::Jump(usize::MAX), Pos::START);
+                self.pending_exit(at + 1, ExitKind::Break);
+            }
+            ir::Stmt::Continue => {
+                let at = self.emit_at(Op::Continue, Pos::START);
+                self.emit(Op::Jump(usize::MAX), Pos::START);
+                self.pending_exit(at + 1, ExitKind::Continue);
+            }
 
             ir::Stmt::While { cond, body, pos } => {
                 let top = self.here();
@@ -301,6 +369,7 @@ impl FnCompiler {
                 let exit = self.emit_at(Op::JumpIfFalse(0), *pos);
                 self.emit(Op::LoopEnter, *pos);
                 self.loops += 1;
+                self.exits.push(Vec::new());
                 self.block(body)?;
                 self.loops -= 1;
                 self.emit(Op::EndLoop { on_break: 0 }, *pos);
@@ -340,18 +409,29 @@ impl FnCompiler {
 
                 self.emit(Op::LoopEnter, *pos);
                 self.loops += 1;
+                self.exits.push(Vec::new());
                 self.block(body)?;
                 self.loops -= 1;
-                self.emit(Op::EndLoop { on_break: 0 }, *pos);
 
+                // The increment comes before EndLoop so that a continue, which
+                // lands on EndLoop, still moves the counter on. A break jumps
+                // past the increment instead, so the counter is left alone and
+                // the loop condition stops it.
                 self.emit(Op::Load(*var_slot), *pos);
                 self.emit(Op::Const(ir::Const::Int(1)), *pos);
                 self.emit(Op::Binary(ast::BinOp::Add), *pos);
                 self.emit(Op::Store(*var_slot), *pos);
+
+                let end_loop = self.emit_at(Op::EndLoop { on_break: 0 }, *pos);
+                self.close_continues(end_loop);
+
                 self.emit(Op::Jump(top), *pos);
+                let after = self.here();
+                self.close_breaks(after);
+
                 let end = self.here();
                 self.patch(exit, end);
-                self.patch_loop_break(self.instrs.len() - 4, end);
+                self.patch_loop_break(end_loop, end);
                 self.emit(Op::Const(ir::Const::Int(0)), *pos);
             }
 
