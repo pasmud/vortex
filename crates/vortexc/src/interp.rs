@@ -257,12 +257,12 @@ impl<'a> Vm<'a> {
                 Ok(Flow::Value(Value::Unit))
             }
             ir::Stmt::Return(e) => Ok(Flow::Return(self.eval(e, frame)?.value())),
-            ir::Stmt::Nop(e) => {
+            ir::Stmt::Nop { expr, .. } => {
                 // The expression may contain a `return`, `break` or
                 // `continue`, for instance an `if` used as a statement. Those
                 // must not be discarded, or the statements after the `if`
                 // would run.
-                Ok(self.eval(e, frame)?.into_flow())
+                Ok(self.eval(expr, frame)?.into_flow())
             }
             ir::Stmt::Break => Ok(Flow::Break),
             ir::Stmt::Continue => Ok(Flow::Continue),
@@ -345,8 +345,8 @@ impl<'a> Vm<'a> {
     /// it.
     fn eval(&mut self, e: &ir::Expr, frame: &mut Frame) -> Result<Eval, RuntimeError> {
         Ok(match e {
-            ir::Expr::Const(c) => Eval::Value(const_value(c)),
-            ir::Expr::Load(slot) => Eval::Value(frame.get(*slot)),
+            ir::Expr::Const { value, .. } => Eval::Value(const_value(value)),
+            ir::Expr::Load { slot, .. } => Eval::Value(frame.get(*slot)),
             ir::Expr::Store { slot, value, .. } => {
                 let v = self.eval(value, frame)?.value();
                 frame.set(*slot, v.clone());
@@ -864,6 +864,24 @@ fn index_into(base: Value, index: Value, pos: Pos) -> EvalResult {
 }
 
 fn read_field(base: Value, name: &str, pos: Pos) -> EvalResult {
+    // A tuple or a variant payload is read by position, as `t.0` and `s.1`.
+    // The parser accepts a number after a dot for exactly this, and the checker
+    // gives the element's type, so the interpreter serves the element here.
+    if let Some(index) = name.parse::<usize>().ok() {
+        let found = match &base {
+            Value::Tuple(items) => items.get(index).cloned(),
+            Value::Variant { args, .. } => args.get(index).cloned(),
+            _ => None,
+        };
+        return match found {
+            Some(v) => Ok(v),
+            None => Err(RuntimeError::UnknownField {
+                name: name.to_string(),
+                pos,
+            }),
+        };
+    }
+
     match &base {
         Value::Struct { fields, .. } => fields
             .iter()
@@ -873,20 +891,6 @@ fn read_field(base: Value, name: &str, pos: Pos) -> EvalResult {
                 name: name.to_string(),
                 pos,
             }),
-        Value::Variant { ty, args, .. } => {
-            // A variant's payloads are read by position, as `s.0` and `s.1`.
-            let found = name
-                .parse::<usize>()
-                .ok()
-                .and_then(|i| args.get(i).cloned());
-            match found {
-                Some(v) => Ok(v),
-                None => Err(RuntimeError::UnknownField {
-                    name: format!("{}.{}", ty, name),
-                    pos,
-                }),
-            }
-        }
         other => Err(RuntimeError::NotAStruct {
             pos,
             found: other.type_name().to_string(),

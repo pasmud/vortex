@@ -269,7 +269,10 @@ impl Lowerer {
 
             ast::StmtKind::Expr(e) => {
                 let lowered = self.expr(e, st)?;
-                out.push(ir::Stmt::Nop(lowered));
+                out.push(ir::Stmt::Nop {
+                    expr: lowered,
+                    pos: s.pos,
+                });
             }
 
             ast::StmtKind::While { cond, body } => {
@@ -349,16 +352,34 @@ impl Lowerer {
     fn expr(&mut self, e: &ast::Expr, st: &mut FnState) -> Result<ir::Expr, LowerError> {
         let pos = e.pos;
         Ok(match &e.kind {
-            ast::ExprKind::Int(v) => ir::Expr::Const(ir::Const::Int(*v)),
-            ast::ExprKind::Float(v) => ir::Expr::Const(ir::Const::Float(*v)),
-            ast::ExprKind::Str(s) => ir::Expr::Const(ir::Const::Str(s.clone())),
-            ast::ExprKind::Char(c) => ir::Expr::Const(ir::Const::Char(*c)),
-            ast::ExprKind::Bool(b) => ir::Expr::Const(ir::Const::Bool(*b)),
+            ast::ExprKind::Int(v) => ir::Expr::Const {
+                value: ir::Const::Int(*v),
+                pos,
+            },
+            ast::ExprKind::Float(v) => ir::Expr::Const {
+                value: ir::Const::Float(*v),
+                pos,
+            },
+            ast::ExprKind::Str(s) => ir::Expr::Const {
+                value: ir::Const::Str(s.clone()),
+                pos,
+            },
+            ast::ExprKind::Char(c) => ir::Expr::Const {
+                value: ir::Const::Char(*c),
+                pos,
+            },
+            ast::ExprKind::Bool(b) => ir::Expr::Const {
+                value: ir::Const::Bool(*b),
+                pos,
+            },
 
             // A bare name is a variable read, or a call with no arguments.
             ast::ExprKind::Ident(name) => match st.lookup(name) {
                 Some(Binding::Mutable(slot)) | Some(Binding::Immutable(slot)) => {
-                    ir::Expr::Load(slot)
+                    ir::Expr::Load {
+                        slot,
+                        pos,
+                    }
                 }
                 None => {
                     if self.functions.contains_key(name) {

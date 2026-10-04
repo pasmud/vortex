@@ -134,7 +134,7 @@ fn a_range_that_is_not_int_is_rejected() {
     assert_at(
         "fn main() {\n    for i in 0..=1.5 { }\n}",
         2,
-    21,
+    18,
         "both ends must be `Int`",
     );
 }
@@ -144,7 +144,7 @@ fn a_non_int_index_is_rejected() {
     assert_at(
         "fn main() {\n    let a = [1, 2];\n    let b = a[\"x\"];\n}",
         3,
-    14,
+    15,
         "an index must be an `Int`, found `Str`",
     );
 }
@@ -177,8 +177,8 @@ fn two_structs_with_identical_fields_are_different_types() {
     // different types, so they do not mix.
     assert_at(
         "struct A { x: Int, y: Int }\nstruct B { x: Int, y: Int }\nfn main() {\n    let a = A { x: 1, y: 2 };\n    let b = B { x: 1, y: 2 };\n    let c = a == b;\n}",
-        5,
-    13,
+        6,
+    15,
     "cannot compare",
     );
 }
@@ -208,7 +208,7 @@ fn a_field_of_the_wrong_type_is_rejected() {
     assert_at(
         "struct P { x: Int, y: Int }\nfn main() {\n    let p = P { x: 1, y: \"s\" };\n}",
         3,
-    29,
+    13,
         "field `y` of `P` is `Str` where `Int` is expected",
     );
 }
@@ -255,7 +255,7 @@ fn a_list_with_mixed_element_types_is_rejected() {
     assert_at(
         "fn main() {\n    let a = [1, \"two\"];\n}",
         2,
-    18,
+    17,
         "every element of a list has one type",
     );
 }
@@ -267,7 +267,7 @@ fn mixing_int_and_float_in_an_arithmetic_expression_is_rejected() {
     assert_at(
         "fn main() {\n    let a = 1 + 1.5;\n}",
         2,
-    13,
+    15,
         "rule 4 forbids mixing `Int` and `Float`",
     );
 }
@@ -277,7 +277,7 @@ fn comparing_int_with_float_is_rejected() {
     assert_at(
         "fn main() {\n    let a = 1 < 1.5;\n}",
         2,
-    13,
+    15,
         "cannot compare `Int` with `Float`",
     );
 }
@@ -287,7 +287,7 @@ fn subtracting_a_float_from_an_int_is_rejected() {
     assert_at(
         "fn main() {\n    var a = 10;\n    a = a - 0.5;\n}",
         3,
-    14,
+    11,
         "rule 4 forbids mixing `Int` and `Float`",
     );
 }
@@ -360,7 +360,7 @@ fn an_enum_payload_of_the_wrong_type_is_rejected() {
     assert_at(
         "enum S { a(Int) }\nfn main() {\n    let s = S.a(\"text\");\n}",
         3,
-    18,
+    14,
         "value 1 of `S.a` is `Str` where `Int` is expected",
     );
 }
@@ -380,7 +380,7 @@ fn a_match_whose_arms_disagree_is_rejected() {
     assert_at(
         "fn f(n: Int) -> Int {\n    let a = match n { 1 => 1, _ => \"s\" };\n    return a;\n}\nfn main() { }",
         2,
-    32,
+    36,
         "this arm produces `Str` where an earlier arm produces `Int`",
     );
 }
@@ -419,7 +419,7 @@ fn a_builtin_with_the_wrong_argument_type_is_rejected() {
     assert_at(
         "fn main() {\n    let s = int_to_string(1.5);\n}",
         2,
-    25,
+    26,
         "argument 1 of `int_to_string` is `Float` where `Int` is expected",
     );
 }
@@ -429,7 +429,7 @@ fn a_builtin_with_the_wrong_arity_is_rejected() {
     assert_at(
         "fn main() {\n    let s = int_to_string();\n}",
         2,
-    25,
+    26,
         "`int_to_string` takes 1 value, found 0",
     );
 }
@@ -470,7 +470,7 @@ fn a_struct_field_cannot_hold_another_structs_type() {
     assert_at(
         "struct A { n: Int }\nstruct B { n: Int }\nstruct Holder { a: A }\nfn main() {\n    let h = Holder { a: B { n: 1 } };\n}",
         5,
-    27,
+    13,
         "field `a` of `Holder` is `B` where `A` is expected",
     );
 }

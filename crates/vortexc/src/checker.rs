@@ -324,7 +324,7 @@ impl<'a> Checker<'a> {
                 }
                 Ok(())
             }
-            ir::Stmt::Nop(e) => self.expr(e, env).map(|_| ()),
+            ir::Stmt::Nop { expr, .. } => self.expr(expr, env).map(|_| ()),
             ir::Stmt::While { cond, body, .. } => {
                 let c = self.expr(cond, env)?;
                 if c != Type::Bool {
@@ -352,8 +352,11 @@ impl<'a> Checker<'a> {
                 let s = self.expr(start, env)?;
                 let e = self.expr(end, env)?;
                 if s != Type::Int || e != Type::Int {
+                    // The diagnostic belongs on whichever end is wrong, since
+                    // that is the line a reader has to change.
+                    let at = if s != Type::Int { start.pos() } else { end.pos() };
                     return self.error(
-                        *pos,
+                        at,
                         format!(
                             "a `for` range runs from `{}` to `{}`; both ends must be `Int`",
                             self.name_of(&s),
@@ -381,7 +384,7 @@ impl<'a> Checker<'a> {
                     Type::Str => Type::Char,
                     other => {
                         return self.error(
-                            *pos,
+                            iterable.pos(),
                             format!(
                                 "`for` can walk a list, a tuple or a string, found `{}`",
                                 self.name_of(other)
@@ -401,8 +404,8 @@ impl<'a> Checker<'a> {
 
     fn expr(&mut self, e: &ir::Expr, env: &mut Env) -> Result<Type, TypeError> {
         Ok(match e {
-            ir::Expr::Const(c) => const_type(c),
-            ir::Expr::Load(slot) => env.slot_type(*slot).unwrap_or(Type::Unit),
+            ir::Expr::Const { value, .. } => const_type(value),
+            ir::Expr::Load { slot, .. } => env.slot_type(*slot).unwrap_or(Type::Unit),
 
             ir::Expr::Store { slot, value, pos } => {
                 let want = env.slot_type(*slot);
@@ -499,7 +502,7 @@ impl<'a> Checker<'a> {
                     Type::Str => Type::Char,
                     other => {
                         return self.error(
-                            *pos,
+                            base.pos(),
                             format!("`{}` cannot be indexed", self.name_of(&other)),
                         )
                     }
@@ -541,7 +544,7 @@ impl<'a> Checker<'a> {
                     }
                     other => {
                         return self.error(
-                            *pos,
+                            base.pos(),
                             format!(
                                 "cannot read a field of `{}`, which is not a struct",
                                 self.name_of(&other)

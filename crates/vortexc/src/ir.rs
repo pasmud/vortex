@@ -120,19 +120,28 @@ pub enum Stmt {
     /// A statement that produces no value, such as a call written for its
     /// effect. It is kept so an executor walks the same shape the lowering
     /// produced.
-    Nop(Expr),
+    Nop {
+        expr: Expr,
+        pos: Pos,
+    },
 }
 
 /// A lowered expression.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
-    Load(Slot),
+    Load {
+        slot: Slot,
+        pos: Pos,
+    },
     Store {
         slot: Slot,
         value: Box<Expr>,
         pos: Pos,
     },
-    Const(Const),
+    Const {
+        value: Const,
+        pos: Pos,
+    },
     Binary {
         op: ast::BinOp,
         lhs: Box<Expr>,
@@ -198,8 +207,9 @@ impl Expr {
     /// The position this expression started at, which a diagnostic reports.
     pub fn pos(&self) -> Pos {
         match self {
-            Expr::Load(_) | Expr::Const(_) => Pos::START,
-            Expr::Store { pos, .. }
+            Expr::Load { pos, .. }
+            | Expr::Const { pos, .. }
+            | Expr::Store { pos, .. }
             | Expr::Binary { pos, .. }
             | Expr::Unary { pos, .. }
             | Expr::Call { pos, .. }
