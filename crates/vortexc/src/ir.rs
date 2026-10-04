@@ -194,6 +194,26 @@ pub enum Expr {
     BlockValue(Box<Block>),
 }
 
+impl Expr {
+    /// The position this expression started at, which a diagnostic reports.
+    pub fn pos(&self) -> Pos {
+        match self {
+            Expr::Load(_) | Expr::Const(_) => Pos::START,
+            Expr::Store { pos, .. }
+            | Expr::Binary { pos, .. }
+            | Expr::Unary { pos, .. }
+            | Expr::Call { pos, .. }
+            | Expr::If { pos, .. }
+            | Expr::Match { pos, .. }
+            | Expr::List { pos, .. }
+            | Expr::Index { pos, .. }
+            | Expr::Field { pos, .. }
+            | Expr::Try { pos, .. } => *pos,
+            Expr::BlockValue(b) => b.pos,
+        }
+    }
+}
+
 /// What a call refers to, decided at lowering time.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallTarget {
