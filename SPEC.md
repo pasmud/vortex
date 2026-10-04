@@ -117,6 +117,17 @@ are decoded during lexing, so the token carries the decoded value.
     \t     tab               \xNN   byte, exactly two hex digits
     \u{...} unicode scalar value, one to six hex digits
 
+There is **no backspace escape in v0.1**. `\b` is a lex error that names the
+column and says a known escape sequence was expected, because a reader who sees
+`\b` in most languages will expect it to work here. If it is added later, this
+table is the place to add it.
+
+A string escape and a character escape draw from the same table. `'A'` and
+`"A"` are the same value, and so are `'\x41'` and `"A"`. A `\xNN` escape
+decodes one byte as a scalar value, so `"\x41"` is the character `A` and not the
+integer 65; converting between a byte and an `Int` is a `Char` to `Int`
+conversion, not an escape.
+
 An unknown escape, a truncated `\x` and an out of range `\u{...}` are lex errors
 that name what was expected. An unterminated string is a lex error that points
 at the opening quote and says a closing `"` was expected.
@@ -158,7 +169,9 @@ error that says a token was expected.
 7. Inference is local. A variable's type is fixed by its declaration and does
    not change to satisfy a later use.
 8. Shadowing a `let` binding is an error. A name has one type in a scope.
-9. Recursion needs no `mut`.
+9. Recursion needs no `mut`. A function name is not a binding and has no
+   mutability, so a function may call itself however it likes. See section 8.1
+   for how a parameter is made mutable, which is a different question.
 
 ### 6.2 Declarations
 
@@ -244,7 +257,16 @@ such a module is reviewed. That work is not scheduled yet.
 
 ## 8. Syntax and semantics
 
-    fn gcd(a: Int, b: Int) -> Int {
+`let` binds an immutable name. `var` binds a mutable name. An assignment to a
+`let` name is a type error, not a warning. Blocks are expressions and evaluate
+to their final expression when it is not terminated by `;`.
+
+### 8.1 Parameters and mutability
+
+A **parameter is immutable by default**, exactly like a `let`. Writing `var`
+before the parameter's name makes that parameter mutable:
+
+    fn gcd(var a: Int, var b: Int) -> Int {
         while b != 0 {
             let t = b;
             b = a % b;
@@ -253,9 +275,19 @@ such a module is reviewed. That work is not scheduled yet.
         return a;
     }
 
-`let` binds an immutable name. `var` binds a mutable name. An assignment to a
-`let` name is a type error, not a warning. Blocks are expressions and evaluate
-to their final expression when it is not terminated by `;`.
+This is the only difference from a `let`: `a` and `b` above may be assigned,
+because they are written `var`, and nothing else about them changes. A parameter
+without `var` may not be assigned, and an attempt is an error that names the
+parameter and says it was declared with `let`.
+
+There is no `let mut x` and no separate mutable type syntax. `var` on the
+binding is the whole rule, so a reader can check mutability by looking at the
+one word in front of the name.
+
+Rule 9 of section 6.1 says recursion needs no `mut`, and that is unchanged: a
+function may call itself freely, because a function name is not a binding and
+has no mutability. The `gcd` above recurses in no way at all; it only shows
+mutable parameters.
 
     let area = if w > h { w * h } else { h * w }
 
@@ -268,6 +300,26 @@ Control flow is `if` and `else`, `while`, `for x in a..=b`, `break`,
         (_, 0) => "Buzz",
         _ => int_to_string(i),
     };
+
+A `for` loop comes in two forms. `for x in a..=b` counts, and `for x in e` walks
+a list, a tuple or a string. The loop variable is scoped to the loop, so it is
+not visible after it.
+
+### 8.2 What v0.1 cannot write
+
+Stated here so a reader is not surprised, because each of these is a gap a
+programmer will meet immediately.
+
+- **There is no index assignment.** `a[i] = v` is a parse error. The only
+  assignable names are `var` bindings, and a `var` is a whole value, not a list
+  element. This is why `bench/vortex` has no program; see the note there.
+- **There is no list of a computed length.** A list literal lists its elements,
+  `[2, 3, 5]`. There is no `[0; n]` form, so a list whose size is only known at
+  run time cannot be built.
+- **There is no `as` cast.** Section 6.1 rule 4 and section 6.3 both refer to
+  one, and it arrives with the type checker in stage 3.
+- **There is no `Option` or `Result` construction.** Rules 5 and 6 of section
+  6.1 describe them; the `none`, `some`, `ok` and `err` forms arrive in stage 3.
 
 Modules come later. `import` is reserved in v0.1 so that adding it does not
 break programs.
@@ -289,8 +341,12 @@ The optimisation strategy for the stages ahead is:
 3. Measure before adopting an optimisation, and require that it does not
    regress another benchmark.
 
-`BENCHMARKS.md` currently contains **no results**. That is accurate, because
-stage 1 has no evaluator to measure.
+`BENCHMARKS.md` contains **no Vortex results**. Stage 2 has a tree
+interpreter, but Vortex cannot yet write the benchmark workload, because there
+is no index assignment and no list of a computed length. `bench/vortex/README.md`
+records that, and it also holds the measurements taken while deciding whether a
+Vortex row was worth attempting. Nothing in this repository claims a Vortex speed
+result until one is measured.
 
 ## 10. Stage plan
 

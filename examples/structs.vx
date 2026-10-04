@@ -1,0 +1,96 @@
+// Structs, enums, `match` and the loop forms. It exercises `struct`, `enum`,
+// positional and named variant payloads, `match` on a value and on a tuple,
+// field reads, both `for` forms, `break`, `continue`, and a block used as an
+// expression.
+
+struct Point {
+    x: Int,
+    y: Int,
+}
+
+enum Shape {
+    empty,
+    circle(Float),
+    rect { w: Float, h: Float },
+}
+
+// Matches on every variant of an enum, binding its payloads.
+fn area(s: Shape) -> Float {
+    let a = match s {
+        Shape.empty => 0.0,
+        Shape.circle(r) => 3.14159265 * r * r,
+        Shape.rect { w, h } => w * h,
+    };
+    return a;
+}
+
+fn fizzbuzz(n: Int) -> Str {
+    // `match` on a tuple, which is what SPEC.md section 8 shows.
+    let label = match (n % 3, n % 5) {
+        (0, 0) => "FizzBuzz",
+        (0, _) => "Fizz",
+        (_, 0) => "Buzz",
+        _ => int_to_string(n),
+    };
+    return label;
+}
+
+fn main() {
+    let p = Point { x: 3, y: 4 };
+    println(int_to_string(p.x));
+    println(int_to_string(p.y));
+
+    println(float_to_string(area(Shape.circle(2.0))));
+    println(float_to_string(area(Shape.rect { w: 4.0, h: 8.0 })));
+    println(float_to_string(area(Shape.empty)));
+
+    // A list, an index read, and a sum over it.
+    let primes = [2, 3, 5, 7, 11, 13];
+    var total = 0;
+    for i in 0..=5 {
+        total = total + primes[i];
+    }
+    println(int_to_string(total));
+
+    // `continue` skips an iteration and `break` leaves the loop.
+    var sum = 0;
+    var count = 0;
+    for n in 1..=50 {
+        if n % 7 == 0 {
+            continue;
+        }
+        if n > 30 {
+            break;
+        }
+        sum = sum + n;
+        count = count + 1;
+    }
+    println(int_to_string(sum));
+    println(int_to_string(count));
+
+    // The other `for` form walks a list.
+    var joined = "";
+    for word in ["a", "b", "c"] {
+        joined = joined + word;
+    }
+    println(joined);
+
+    // A block used as an expression.
+    let bigger = if p.x > p.y { p.x } else { p.y };
+    println(int_to_string(bigger));
+
+    // `break` out of a `while`.
+    var countdown = 3;
+    while countdown > 0 {
+        if countdown == 1 {
+            break;
+        }
+        countdown = countdown - 1;
+    }
+    println(int_to_string(countdown));
+
+    println(fizzbuzz(15));
+    println(fizzbuzz(3));
+    println(fizzbuzz(7));
+    return 0;
+}
