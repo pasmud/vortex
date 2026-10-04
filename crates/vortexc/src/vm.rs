@@ -130,6 +130,11 @@ impl Frame {
     fn pop(&mut self) -> Value {
         self.stack.pop().unwrap_or(Value::Unit)
     }
+
+    /// The value on top of the stack, left in place.
+    fn peek_value(&self) -> Value {
+        self.stack.last().cloned().unwrap_or(Value::Unit)
+    }
 }
 
 struct Vm<'a> {
@@ -247,6 +252,10 @@ impl<'a> Vm<'a> {
                 }
                 // Reads a payload of the subject that MatchTest kept, without
                 // needing an index on the stack.
+                Op::Dup => {
+                    let v = frame.peek_value();
+                    frame.push(v);
+                }
                 Op::PayloadIndex(i) => {
                     let subject = frame.pop();
                     frame.push(payload(&subject, *i, pos)?);
@@ -331,6 +340,25 @@ impl<'a> Vm<'a> {
                     frame.push(read_field(&b, name, pos)?);
                 }
 
+                Op::Len => {
+                    let v = frame.pop();
+                    let n = match &v {
+                        Value::List(cell) => cell.lock().expect("a list is not poisoned").len(),
+                        Value::Tuple(items) => items.len(),
+                        Value::Str(text) => text.chars().count(),
+                        other => {
+                            return Err(RuntimeError::BadOperands {
+                                op: "len".to_string(),
+                                lhs: other.type_name().to_string(),
+                                rhs: String::new(),
+                                pos,
+                            })
+                        }
+                    };
+                    frame.push(Value::Int(n as i64));
+                }
+                Op::LoopEnter => frame.loops += 1,
+                Op::LoopExit => frame.loops = frame.loops.saturating_sub(1),
                 Op::EndLoop { on_break } => {
                     // A loop body ends here. A flag set inside it decides
                     // whether the loop stops or repeats, and is cleared either

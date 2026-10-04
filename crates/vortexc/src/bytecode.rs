@@ -84,6 +84,17 @@ pub enum Op {
     Return,
     /// Read one named field of the value below.
     FieldRead(String),
+    /// Leave a second copy of the value on top of the stack.
+    Dup,
+
+    /// The number of values in the collection below, which a `for` over a list
+    /// needs for its condition.
+    Len,
+    /// Enter a loop body. The VM counts these so a `break` or `continue` knows
+    /// it is inside a loop.
+    LoopEnter,
+    /// Leave a loop body, undoing a `LoopEnter`.
+    LoopExit,
     /// End of a loop body. `on_break` is where a `break` jumps.
     EndLoop { on_break: usize },
     /// Test the value on top of the stack against a pattern. A true result
@@ -288,6 +299,7 @@ impl FnCompiler {
                 let top = self.here();
                 self.expr(cond)?;
                 let exit = self.emit_at(Op::JumpIfFalse(0), *pos);
+                self.emit(Op::LoopEnter, *pos);
                 self.loops += 1;
                 self.block(body)?;
                 self.loops -= 1;
@@ -326,6 +338,7 @@ impl FnCompiler {
                 self.emit(Op::Binary(ast::BinOp::Lt), *pos);
                 let exit = self.emit_at(Op::JumpIfFalse(0), *pos);
 
+                self.emit(Op::LoopEnter, *pos);
                 self.loops += 1;
                 self.block(body)?;
                 self.loops -= 1;
@@ -357,13 +370,16 @@ impl FnCompiler {
                 self.emit(Op::Store(idx), *pos);
 
                 let top = self.here();
+                // The condition is index < length of the sequence. It compared
+                // the index with itself before, which is never true, so the loop
+                // either never ran or never stopped.
                 self.emit(Op::Load(idx), *pos);
-                // The index is compared against the length, which the VM puts
-                // in slot `idx` when it walks a string rather than a list.
-                self.emit(Op::Load(idx), *pos);
+                self.emit(Op::Load(seq), *pos);
+                self.emit(Op::Len, *pos);
                 self.emit(Op::Binary(ast::BinOp::Lt), *pos);
                 let exit = self.emit_at(Op::JumpIfFalse(0), *pos);
 
+                self.emit(Op::LoopEnter, *pos);
                 self.emit(Op::Load(seq), *pos);
                 self.emit(Op::Load(idx), *pos);
                 self.emit(Op::Index, *pos);
@@ -518,7 +534,15 @@ impl FnCompiler {
                         ir::Pattern::Binding(b) => self.emit(Op::Store(b.slot), pos),
                         // A variant pattern reads its payloads by position.
                         ir::Pattern::Variant { bindings, .. } => {
+                            // A payload read consumes the subject and leaves
+                            // only the payload, which the store then consumes
+                            // too. So every read but the last duplicates the
+                            // subject first, keeping one copy for the read
+                            // that follows.
                             for (i, b) in bindings.iter().enumerate() {
+                                if i + 1 < bindings.len() {
+                                    self.emit(Op::Dup, pos);
+                                }
                                 self.emit(Op::PayloadIndex(i), pos);
                                 self.emit(Op::Store(b.slot), pos);
                             }
@@ -619,6 +643,10 @@ impl Instr {
             Op::ListLen(n) => format!("list-len {}", n),
             Op::BuildPattern(p) => format!("build-pattern {}", pattern_text(p)),
             Op::FieldRead(n) => format!("field-read {}", n),
+            Op::Dup => "dup".to_string(),
+            Op::Len => "len".to_string(),
+            Op::LoopEnter => "loop-enter".to_string(),
+            Op::LoopExit => "loop-exit".to_string(),
             Op::EndLoop { on_break } => format!("end-loop break->{}", on_break),
             Op::MatchTest { on_fail, keep } => {
                 format!(
