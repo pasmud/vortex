@@ -372,11 +372,18 @@ impl FnCompiler {
                 self.exits.push(Vec::new());
                 self.block(body)?;
                 self.loops -= 1;
-                self.emit(Op::EndLoop { on_break: 0 }, *pos);
-                self.emit(Op::Jump(top), *pos);
+
+                // A while loop has no counter, so a continue and a break can
+                // both land on EndLoop. The exits list is popped here, or a
+                // later loop would inherit this one and patch against it.
+                let end_loop = self.emit_at(Op::EndLoop { on_break: 0 }, *pos);
+                self.close_continues(end_loop);
+                let after = self.emit_at(Op::Jump(top), *pos);
+                self.close_breaks(after);
+
                 let end = self.here();
                 self.patch(exit, end);
-                self.patch_loop_break(self.instrs.len() - 3, end);
+                self.patch_loop_break(end_loop, end);
                 self.emit(Op::Const(ir::Const::Int(0)), *pos);
             }
 
