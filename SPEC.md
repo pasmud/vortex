@@ -319,9 +319,10 @@ building the benchmark workload.
   `count` copies of `value`. The count must be an `Int` and the type of the
   list is the type of the repeated value, so every element still has one type.
 - **There is no `as` cast.** Section 6.1 rule 4 and section 6.3 both refer to
-  one. Until it exists there is no way between an `Int` and a `Float`, which
-  is why `bench/vortex` cannot yet write the floating point half of the
-  benchmark workload.
+  one. Until it exists there is no way between an `Int` and a `Float`, which is
+  why the Vortex benchmark row covers the sieve only and not the baseline's
+  floating point matrix multiply. The benchmark compares the integer part of
+  the checksum, which matches, and `BENCHMARKS.md` states the omission.
 - **There is no `Option` or `Result` construction.** Rules 5 and 6 of section
   6.1 describe them. `?` is accepted by the parser and typed by the checker,
   but there is no way to write `none`, `some`, `ok` or `err` yet.
@@ -350,13 +351,13 @@ The optimisation strategy for the stages ahead is:
 3. Measure before adopting an optimisation, and require that it does not
    regress another benchmark.
 
-`BENCHMARKS.md` contains **no comparable Vortex result**. Stage 3 writes the
-sieve in Vortex and it is correct, but it cannot supply a time for two measured
-reasons: the baseline checksum covers a floating point half that Vortex cannot
-write yet, because there is no `as` cast, and the sieve half is too slow in a
-tree interpreter to reach the baseline's limit. `bench/vortex/README.md` records
-the measurements. Nothing in this repository claims a Vortex speed result until
-one is measured.
+`BENCHMARKS.md` now carries a **recorded Vortex result**. Stage 3 writes the
+sieve in Vortex, its checksum matches the C and Rust baselines, and the raw
+harness output is committed with the machine and the compiler versions. On that
+measurement Vortex is roughly 155 times slower than C, which is a statement
+about a tree interpreter with no bytecode and not about the design of the
+language. Nothing here claims Vortex is fast; it does not yet have the evidence
+to. Stage 4's first job is that number.
 
 ## 10. Stage plan
 

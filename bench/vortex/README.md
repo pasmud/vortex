@@ -1,70 +1,84 @@
 # The Vortex benchmark workload
 
-There is a Vortex program at `bench/vortex/sieve.vx`, and it does not produce a
-time in the comparison table. This file records why, with the measurements that
-show it.
+`bench/vortex/sieve.vx` implements the sieve of Eratosthenes from
+`bench/c/sieve.c` and `bench/rust/src/main.rs`, and it prints the same checksum
+they do: `1179908154`. It runs in the tree interpreter and carries a time in
+`BENCHMARKS.md`.
 
-## What the program does
+## What it uses
 
-It implements the sieve of Eratosthenes from `bench/c/sieve.c` and
-`bench/rust/src/main.rs`, using the two features stage 3 added: a list of a
-computed length, `[0; limit + 1]`, and index assignment, `composite[j] = 1`.
+Two forms that stage 2 could not write and stage 3 added:
 
-The algorithm is correct. These checksums were produced by running it:
+    var composite = [0; limit + 1];   // a list of a computed length
+    composite[j] = 1;                // index assignment
 
-| Limit | Sum of primes | Time |
+## Two things that had to be right
+
+**The sum wraps in the baselines.** The C baseline accumulates into a
+`uint32_t`, so the sum wraps at 2^32 and prints 1179908154. A Vortex `Int` is 64
+bit, so the plain sum is 142913828922. The program masks to 32 bits on every
+addition to match:
+
+    fn wrap32(n: Int) -> Int {
+        return n % 4294967296;
+    }
+
+Masking rather than widening the language type is deliberate. A Vortex program
+that wants the true sum should not have to imitate a C overflow to interoperate
+with one.
+
+**The floating point half is absent.** The baseline checksum
+`1179908154 3314.003906` covers a sieve and a floating point matrix multiply.
+Vortex cannot write the matrix multiply, because there is no `as` cast and
+`SPEC.md` section 6.1 rule 4 forbids the implicit `Int` to `Float` conversion.
+The Vortex row therefore covers the sieve only. The harness compares the integer
+part of the checksum, which is the same in all three, and `BENCHMARKS.md` says
+plainly that the floating point half is missing rather than implying the rows
+measure the same thing.
+
+## What made it run at all
+
+The first working version could not finish, and the cause was an implementation
+defect rather than anything about the language.
+
+A store into a list element read the whole list out of its frame slot, cloned
+all of it, changed one element and stored it back. Every store cost the length
+of the list, so the sieve was quadratic.
+
+Measured before and after, with `cargo run --release --example run_example`:
+
+| Limit | Before | After |
 | --- | --- | --- |
-| 100 | 1060 | not timed |
-| 1000 | 76127 | not timed |
-| 10000 | 5736396 | 3676 ms |
-| 20000 | 21171191 | 15862 ms |
+| 10000 | 3676 ms | 27 ms |
+| 20000 | 15862 ms | 37 ms |
+| 100000 | timed out after 240 s | 138 ms |
+| 2000000 | timed out | 2780 ms |
 
-Each was run with `cargo run --release --example run_example -- <file>` on the
-machine recorded in `BENCHMARKS.md`.
+The fix is to hold a list in a shared cell and mutate through it, so a store
+costs the same whatever the length. The language model is unchanged: the cell
+never escapes the runtime, and a Vortex program still has exactly one binding
+and one owner per list, which is what `SPEC.md` section 7 requires. The cell is
+`Arc` rather than `Rc` only because the interpreter runs on its own thread so
+that its call depth guard can report a runaway recursion instead of exhausting
+the machine stack.
 
-## Why it is not in the table
+## What stage 4 should do with this
 
-**The workload is not the same one, so its checksum cannot match.** The C and
-Rust baselines print `checksum 1179908154 3314.003906`. That covers two things:
-a sieve over 2,000,000 and a floating point matrix multiply. Vortex v0.1 cannot
-write the second half, because it has no implicit conversion from `Int` to
-`Float` and no `as` cast yet, and section 6.1 rule 4 forbids the implicit one.
-So the Vortex program prints a sieve checksum only, which does not equal the
-baseline checksum. A row with a different checksum in a table that compares
-checksums would be worse than no row.
+2780 ms against 18 ms for C is the number to beat, and it is about 155 times
+slower. That gap is the interpreter, not the arithmetic: every step walks the
+tree and dispatches again.
 
-**The sieve half does not finish in usable time anyway.** A tree interpreter
-with no bytecode and no host interoperation is slow, and this is the honest
-measurement rather than an estimate. Doubling the limit from 10,000 to 20,000
-took the time from 3.7 seconds to 15.9 seconds, so the cost grows faster than
-linearly in the limit, because the sieve's own work grows with it. The baseline
-uses 2,000,000, which is two orders of magnitude beyond a size that already
-takes sixteen seconds. Running it was attempted and timed out, twice: once at
-2,000,000 and once at 100,000, the latter after four minutes without producing
-output.
-
-So the Vortex row prints `n/a` and names the reason. No Vortex time is recorded
-and none is estimated.
-
-## What stage 4 should do
-
-This is the evidence stage 4 needs, and it is the reason stage 4 exists.
-
-- **The bytecode VM is what makes this workload reachable.** The tree walk
-  re-evaluates and re-dispatches on every step. A bytecode loop with a frame of
-  slots and no dispatch per node is the obvious next step, and this measurement
-  is the before number it has to beat.
-- **Add `as` casts so the matrix half is expressible.** Then the checksum can
-  match the baselines and the comparison becomes a real comparison rather than
-  two workloads that happen to sit in one table.
-- **Keep the checksum discipline.** When the Vortex row finally carries a time,
-  it carries the same checksum as the other two, and `bench/run.sh` refuses to
-  print a time for a program whose checksum does not match.
+- **The bytecode VM** is the obvious next step. The frontend already lowers once
+  to `crates/vortexc/src/ir.rs`, which is exactly what a register machine
+  consumes, so this is a new executor rather than a rewrite.
+- **A disassembly command** would make the bytecode inspectable, which is how a
+  later stage can tell what it is actually emitting.
+- **Keep the checksum discipline.** When the Vortex row gains a Float half it
+  must print the full `1179908154 3314.003906`, and `bench/run.sh` already
+  refuses to print a time for a row whose checksum does not match.
 
 ## What was deliberately not done
 
-A smaller workload written three times, and three numbers in one table. That
-would have produced three real measurements of three different algorithms, and
-the table would have read as a comparison it could not support. The numbers
-above are measurements of one Vortex program, they are labelled as such, and
-they are not a comparison with C or Rust.
+A smaller workload written three times to fill the table. Three different
+algorithms in one table looks like evidence and is not, so the table carries one
+algorithm measured three times instead.
