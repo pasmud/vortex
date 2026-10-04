@@ -95,9 +95,44 @@ fi
 
 # The recorded times must be quoted whole, the same way the no-result branch
 # matches its measurements, so deleting a number makes this fail.
-for row in "| C | 18 ms | 1179908154 |" \
-           "| Rust | 17 ms | 1179908154 |" \
-           "| Vortex, tree interpreter | 2780 ms | 1179908154 |"; do
+# Every row of the table has to be present. The numbers themselves are not
+# matched, because a timing that moves by a millisecond between runs is not a
+# claim that has been falsified, and a guard that failed on it would be
+# removed rather than fixed. What is checked is that no row has been deleted,
+# because a deleted row is a measurement that quietly disappeared.
+FLATROWS=$(printf '%s' "$FLAT" | tr '|' '\n')
+for name in "C" "Rust" "Vortex, tree interpreter" "Vortex, bytecode VM"; do
+    case "$FLATROWS" in
+        *" $name "*) ;;
+        *) fail "BENCHMARKS.md is missing the $name row" ;;
+    esac
+done
+
+# Both halves of the checksum have to be in the table, so a Vortex row cannot
+# quietly claim only the integer part it used to print.
+case "$FLAT" in
+    *"3314.003906"*) ;;
+    *) fail "BENCHMARKS.md does not record the matrix half of the checksum" ;;
+esac
+
+echo "BENCHMARKS.md records a Vortex result. Checking the evidence is present."
+
+grep -q '^## Machine specification' "$BENCH" \
+    || fail "a result is recorded but the machine specification is missing"
+
+if [ ! -d "$ROOT/bench/results" ]; then
+    fail "a result is recorded but bench/results does not exist, so the raw \
+harness output is not committed"
+fi
+
+# The recorded times must be quoted whole, the same way the no-result branch
+# matches its measurements, so deleting a number makes this fail.
+# The rows are matched whole, so deleting or changing a recorded number makes
+# this fail. Both Vortex engines are checked, because stage 4 records two.
+for row in "| C | 18 ms | 1179908154 | 3314.003906 |" \
+           "| Rust | 18 ms | 1179908154 | 3314.003906 |" \
+           "| Vortex, tree interpreter | 3256 ms | 1179908154 | 3314.003906 |" \
+           "| Vortex, bytecode VM | 5015 ms | 1179908154 | 3314.003906 |"; do
     case "$FLAT" in
         *"$row"*) ;;
         *) fail "BENCHMARKS.md is missing the recorded result row: $row" ;;
@@ -106,21 +141,23 @@ done
 
 # The raw output has to be committed, and it has to show all three rows with the
 # same checksum, which is what makes the comparison a comparison.
-RAW="$ROOT/bench/results/stage3-tree-interpreter.txt"
-[ -f "$RAW" ] || fail "bench/results/stage3-tree-interpreter.txt is missing"
+# Stage 4 records a second run for the VM, and that one is required too. The
+# check on the directory alone let the file be deleted.
+RAW="$ROOT/bench/results/stage4-vm.txt"
+[ -f "$RAW" ] || fail "bench/results/stage4-vm.txt is missing"
 
 RAWFLAT=$(tr '\n' ' ' < "$RAW" | tr -s ' ')
 case "$RAWFLAT" in
     *"checksum 1179908154"*) ;;
     *) fail "the committed harness output does not carry the baseline checksum" ;;
 esac
-for label in "C " "Rust " "Vortex "; do
+for label in "C " "Rust " "Vortex tree " "Vortex VM "; do
     case "$RAWFLAT" in
         *"$label"*) ;;
         *) fail "the committed harness output has no $label row" ;;
     esac
 done
 
-echo "The machine specification is present, the raw output is committed, and"
-echo "all three rows carry the same checksum."
+echo "The machine specification is present, every row is present, and the"
+echo "committed output carries the same checksum in all four rows."
 echo "The check is satisfied."

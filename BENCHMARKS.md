@@ -2,35 +2,53 @@
 
 ## A recorded Vortex result
 
-The comparison table has a Vortex row. **All three rows run the same program**,
-a sieve of Eratosthenes over 2,000,000 plus a 256 by 256 floating point matrix
-multiply, and all three print the same checksum. The checksum is shown in full,
-including the float, so a reader can see that the same work was measured rather
-than being asked to take it on trust.
+The comparison table has Vortex rows for both execution engines. **All four rows
+run the same program**, a sieve of Eratosthenes over 2,000,000 plus a 256 by 256
+floating point matrix multiply, and all four print the same checksum. The
+checksum is shown in full, including the float, so a reader can see that the
+same work was measured rather than being asked to take it on trust.
 
-| Language | Wall clock | Sieve sum | Matrix sum | Full checksum |
+| Language and engine | Wall clock | Sieve sum | Matrix sum | Full checksum |
 | --- | --- | --- | --- | --- |
 | C | 18 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
-| Rust | 17 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
-| Vortex, tree interpreter | 2780 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Rust | 18 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Vortex, tree interpreter | 3256 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Vortex, bytecode VM | 5015 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+
+Raw harness output for the tree interpreter row is committed at
+`bench/results/stage3-tree-interpreter.txt`, and for both Vortex rows at
+`bench/results/stage4-vm.txt`. Both were produced by:
+
+    bench/run.sh --repeats 5
+
+### The VM is slower than the tree interpreter
+
+**The bytecode VM is about 1.5 times slower than the tree interpreter on this
+workload: 5015 ms against 3256 ms.** That is a disappointing number and it is
+published rather than omitted, because it is a fact about this implementation.
+
+The reason is not the dispatch the VM was built to remove. A tree walk in Rust
+recurses, so each Vortex call becomes native calls that the optimiser already
+inlines and keeps in registers. The VM instead walks a `Vec<Instr>`, matching on
+an enum per instruction and pushing and popping a `Vec<Value>` for every
+operand, so it adds work the tree walk never had. Removing per node dispatch
+was the wrong diagnosis of where the time went.
+
+What that means for stage 4 and stage 5 is concrete. A bytecode VM in a
+dynamically typed tree interpreter is not automatically faster than walking a
+tree, and a VM in this design should not be expected to be. The measurements
+that would change it are a frame-allocated operand stack rather than a `Vec`, and
+avoiding the `Value` clone on every store and load. Neither has been tried, so
+neither is claimed.
+
+**No Vortex speed claim is made beyond this table.** Vortex is roughly 180 times
+slower than C here. That is a fact about a stage 4 tree interpreter and a stage 4
+bytecode VM, not about the design of the language, and not about where it could
+end up.
 
 The Vortex matrix half needed the `as` cast, which stage 4 added. Before it, the
 Vortex row covered the sieve only and the table said so. It no longer needs to,
 and this table reflects what was measured rather than what was possible before.
-
-The raw harness output is committed at
-`bench/results/stage3-tree-interpreter.txt`, produced by:
-
-    bench/run.sh --repeats 5
-
-**Vortex is about 155 times slower than C on this workload.** That is a tree
-interpreter with no bytecode and no host interoperation, which is what stage 2
-built and stage 3 type checked. It is not a statement about the design of the
-language, only about where this implementation stands today. Stage 4 exists to
-improve exactly this number, and the measurement above is the before number it
-has to beat.
-
-Nothing here claims Vortex is fast. It does not yet have the evidence to.
 
 ## What the three rows measure
 

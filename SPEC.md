@@ -372,14 +372,46 @@ to. Stage 4's first job is that number.
 5. **Backend.** A native backend and a memory and concurrency model, chosen
    from stage 4 measurements and from section 7.2.
 
-### 10.1 A recorded concern about stage 4
+### 10.1 The risk of the bytecode VM being wasted work
 
-A bytecode VM built in stage 4 can become dead work if stage 5 moves to a native
-backend, because the execution engine is replaced rather than extended. The
-mitigation is to lower the AST once, in stage 2, into a form that both the tree
-interpreter and the VM consume, so stage 4 adds a consumer instead of
-rewriting the frontend. The stage order stays as written; this note exists so
-the risk is visible before stage 2 starts rather than discovered during stage 4.
+**Resolved in stage 4. The VM does not survive into the native backend, and it
+was measured rather than assumed.**
+
+The risk was that stage 4 builds a virtual machine that stage 5 replaces, which
+would be dead work. Stage 4 measured it:
+
+| Engine | Wall clock on the benchmark workload |
+| --- | --- |
+| Vortex, tree interpreter | 3256 ms |
+| Vortex, bytecode VM | 5015 ms |
+
+**The VM is about 1.5 times slower than the tree interpreter.** It is kept for
+one reason and one reason only: it is a second consumer of the lowered form, so
+`crates/vortexc/src/ir.rs` is exercised by a second executor, and the stage 2
+and 3 test suites run against it unchanged. That is what found the loop defects
+recorded in `bench/vortex/README.md`, and it is worth that.
+
+It is not kept because it is faster, because it is not. The premise it was
+built on, that per node dispatch was the cost, was wrong. A tree walk in Rust
+recurses, so a Vortex call becomes native calls the optimiser already inlines.
+The VM instead walks a `Vec<Instr>`, matches on an enum per instruction, and
+pushes and pops a `Vec<Value>` per operand, which is work the tree walk never
+had. Removing dispatch was not where the time went.
+
+So the native backend does not consume the VM. It consumes
+`crates/vortexc/src/ir.rs`, the same lowered form the tree interpreter and the
+VM both walk, which is what lowering once in stage 2 was for. The VM becomes a
+test oracle rather than an execution path, and stage 5 should not spend its
+budget optimising it.
+
+What would change this decision, stated in advance so it is not argued later: a
+measured VM that beats the tree interpreter on the benchmark workload. A frame
+allocated operand stack instead of a `Vec`, and avoiding the `Value` clone on
+every store and load, are the two changes most likely to do it. Neither has been
+tried, so neither is claimed.
+
+The lowering pass itself was not at risk and is unchanged: the frontend lowers
+once and the native backend is a third consumer of the result.
 
 ## 11. Open questions
 

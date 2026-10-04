@@ -1,0 +1,21 @@
+
+Vortex benchmark harness
+========================
+
+Repeats per workload: 5 (the fastest run is reported)
+Build directory:      /workspace/repo/bench/build
+
+LANGUAGE             WALL CLOCK CHECKSUM
+--------             ---------- --------
+C          16 ms                  checksum 1179908154 3314.003906
+Rust       19 ms                  checksum 1179908154 3314.003906
+Vortex tree          3250 ms    checksum 1179908154 3314.003906
+Vortex VM            4939 ms    checksum 1179908154 3314.003906
+
+Toolchain used for this run
+---------------------------
+C:    cc (Debian 12.2.0-14+deb12u1) 12.2.0
+Rust: rustc 1.99.0 (b940084d7 2026-09-28)
+Host: Linux 6.18.35 x86_64
+CPU:  Intel(R) Core(TM) i5-8500T CPU @ 2.10GHz
+
