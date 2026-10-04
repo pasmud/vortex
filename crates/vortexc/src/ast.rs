@@ -122,7 +122,10 @@ pub enum StmtKind {
     /// A `{ ... }` used where a statement is expected.
     Block(Block),
     /// `while c { ... }`
-    While { cond: Expr, body: Block },
+    While {
+        cond: Expr,
+        body: Block,
+    },
     /// `for x in a..=b { ... }`, which counts, or `for x in e { ... }`, which
     /// walks a list or a string. `end` is `None` for the second form.
     For {
@@ -170,14 +173,20 @@ pub enum ExprKind {
     /// A bare name: a variable read, or a call with no arguments.
     Ident(String),
     /// `f(a, b)`
-    Call { callee: String, args: Vec<Expr> },
+    Call {
+        callee: String,
+        args: Vec<Expr>,
+    },
     /// `-e`
     Neg(Box<Expr>),
     /// `!e`
     Not(Box<Expr>),
     /// `name = value`, which is an expression statement rather than a binary
     /// operator, because the left side is a name and not a value.
-    Assign { name: String, value: Box<Expr> },
+    Assign {
+        name: String,
+        value: Box<Expr>,
+    },
     /// `lhs op rhs`
     Binary {
         op: BinOp,
@@ -201,7 +210,10 @@ pub enum ExprKind {
         fields: Vec<(String, Expr)>,
     },
     /// `Shape.empty`
-    Variant { ty: String, variant: String },
+    Variant {
+        ty: String,
+        variant: String,
+    },
     /// `Shape.circle(2.0)`
     VariantCall {
         ty: String,

@@ -24,7 +24,11 @@ pub struct ParseError {
 
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "error at {}: {}\n{}", self.pos, self.message, self.snippet)
+        write!(
+            f,
+            "error at {}: {}\n{}",
+            self.pos, self.message, self.snippet
+        )
     }
 }
 
@@ -517,12 +521,13 @@ impl<'a> Parser<'a> {
             self.advance();
             let value = self.expr()?;
             return match lhs.kind {
-                ExprKind::Ident(name) => {
-                    Ok(Expr::new(pos, ExprKind::Assign {
+                ExprKind::Ident(name) => Ok(Expr::new(
+                    pos,
+                    ExprKind::Assign {
                         name,
                         value: Box::new(value),
-                    }))
-                }
+                    },
+                )),
                 other => {
                     let found = describe_expr(&other);
                     self.fail(lhs.pos, "a name on the left of `=`", &found)
@@ -664,9 +669,7 @@ impl<'a> Parser<'a> {
         if self.at(&Tok::LBrace) && self.struct_literal_ok {
             let ty = match ty {
                 Some(t) => t,
-                None => {
-                    return self.fail(pos, "a type name before `{`", "this expression")
-                }
+                None => return self.fail(pos, "a type name before `{`", "this expression"),
             };
             let fields = self.record_body()?;
             return Ok(Expr::new(
@@ -679,10 +682,7 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        Ok(Expr::new(
-            pos,
-            ExprKind::Field(Box::new(base), name),
-        ))
+        Ok(Expr::new(pos, ExprKind::Field(Box::new(base), name)))
     }
 
     fn call_args(&mut self) -> Result<Vec<Expr>, ParseError> {
@@ -787,7 +787,11 @@ impl<'a> Parser<'a> {
                     let mut arms = Vec::new();
                     while !self.at(&Tok::RBrace) {
                         if self.at(&Tok::Eof) {
-                            return self.fail(self.pos(), "a `}` to close the `match`", "end of file");
+                            return self.fail(
+                                self.pos(),
+                                "a `}` to close the `match`",
+                                "end of file",
+                            );
                         }
                         arms.push(self.arm()?);
                     }
@@ -891,7 +895,11 @@ impl<'a> Parser<'a> {
             let found = self.peek().describe();
             return self.fail(self.pos(), "a `,` or `}` after the arm", &found);
         }
-        Ok(Arm { pos, patterns, body })
+        Ok(Arm {
+            pos,
+            patterns,
+            body,
+        })
     }
 
     fn at_one_of(&self, toks: &[Tok]) -> bool {

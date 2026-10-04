@@ -80,12 +80,11 @@ impl Eval {
 pub fn run(program: &ir::Program, out: &mut dyn Write) -> Result<Value, RuntimeError> {
     match run_collecting_output(program) {
         Ok((value, text)) => {
-            out.write_all(text.as_bytes()).map_err(|e| {
-                RuntimeError::BadControlFlow {
+            out.write_all(text.as_bytes())
+                .map_err(|e| RuntimeError::BadControlFlow {
                     pos: Pos::START,
                     detail: format!("could not write output: {}", e),
-                }
-            })?;
+                })?;
             Ok(value)
         }
         Err(e) => Err(e),
@@ -114,8 +113,7 @@ pub fn run_collecting_output(program: &ir::Program) -> Result<(Value, String), R
 
     match handle.join() {
         Ok((result, buffer)) => {
-            let text =
-                String::from_utf8(buffer).expect("output should be valid UTF-8");
+            let text = String::from_utf8(buffer).expect("output should be valid UTF-8");
             result.map(|v| (v, text))
         }
         Err(_) => Err(RuntimeError::BadControlFlow {
@@ -877,7 +875,10 @@ fn read_field(base: Value, name: &str, pos: Pos) -> EvalResult {
             }),
         Value::Variant { ty, args, .. } => {
             // A variant's payloads are read by position, as `s.0` and `s.1`.
-            let found = name.parse::<usize>().ok().and_then(|i| args.get(i).cloned());
+            let found = name
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| args.get(i).cloned());
             match found {
                 Some(v) => Ok(v),
                 None => Err(RuntimeError::UnknownField {
@@ -917,11 +918,7 @@ pub fn display(v: &Value) -> String {
                 .collect();
             format!("{}{{{}}}", name, parts.join(", "))
         }
-        Value::Variant {
-            ty,
-            variant,
-            args,
-        } => {
+        Value::Variant { ty, variant, args } => {
             if args.is_empty() {
                 format!("{}.{}", ty, variant)
             } else {

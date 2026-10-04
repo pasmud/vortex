@@ -94,7 +94,9 @@ fn strings_vx_prints_escapes_characters_and_conversions() {
 #[test]
 fn a_function_is_called_and_its_value_returned() {
     assert_eq!(
-        returned("fn twice(n: Int) -> Int { return n * 2; } fn main() -> Int { return twice(21); }"),
+        returned(
+            "fn twice(n: Int) -> Int { return n * 2; } fn main() -> Int { return twice(21); }"
+        ),
         Value::Int(42)
     );
 }
@@ -129,16 +131,16 @@ fn recursion_works() {
 #[test]
 fn a_return_inside_an_if_leaves_the_function() {
     // The statements after the `if` must not run when the branch returns.
-    let out = run(
-        "fn f(n: Int) -> Int { if n < 2 { return 1; } return 2; }
-         fn main() { println(int_to_string(f(1))); println(int_to_string(f(9))); }",
-    );
+    let out = run("fn f(n: Int) -> Int { if n < 2 { return 1; } return 2; }
+         fn main() { println(int_to_string(f(1))); println(int_to_string(f(9))); }");
     assert_eq!(out, "1\n2\n");
 }
 
 #[test]
 fn let_binds_and_var_allows_assignment() {
-    let out = run(&main_with("var a = 1; a = a + 41; let b = 2; println(int_to_string(a + b));"));
+    let out = run(&main_with(
+        "var a = 1; a = a + 41; let b = 2; println(int_to_string(a + b));",
+    ));
     assert_eq!(out, "44\n");
 }
 
@@ -218,37 +220,29 @@ fn a_block_is_an_expression() {
 
 #[test]
 fn a_struct_is_built_and_its_fields_read() {
-    let out = run(
-        "struct Point { x: Int, y: Int }
-         fn main() { let p = Point { x: 3, y: 4 }; println(int_to_string(p.x * p.y)); }",
-    );
+    let out = run("struct Point { x: Int, y: Int }
+         fn main() { let p = Point { x: 3, y: 4 }; println(int_to_string(p.x * p.y)); }");
     assert_eq!(out, "12\n");
 }
 
 #[test]
 fn an_enum_variant_with_no_payload_is_built() {
-    let out = run(
-        "enum Shape { empty, circle(Float) }
-         fn main() { let s = Shape.empty; print(s); println(\"\"); }",
-    );
+    let out = run("enum Shape { empty, circle(Float) }
+         fn main() { let s = Shape.empty; print(s); println(\"\"); }");
     assert_eq!(out, "Shape.empty\n");
 }
 
 #[test]
 fn an_enum_variant_with_a_positional_payload_is_built() {
-    let out = run(
-        "enum Shape { empty, circle(Float) }
-         fn main() { print(Shape.circle(1.5)); println(\"\"); }",
-    );
+    let out = run("enum Shape { empty, circle(Float) }
+         fn main() { print(Shape.circle(1.5)); println(\"\"); }");
     assert_eq!(out, "Shape.circle(1.500000)\n");
 }
 
 #[test]
 fn an_enum_variant_with_named_fields_is_built() {
-    let out = run(
-        "enum Shape { empty, rect { w: Float, h: Float } }
-         fn main() { print(Shape.rect { w: 2.0, h: 3.0 }); println(\"\"); }",
-    );
+    let out = run("enum Shape { empty, rect { w: Float, h: Float } }
+         fn main() { print(Shape.rect { w: 2.0, h: 3.0 }); println(\"\"); }");
     assert_eq!(out, "Shape.rect(2.000000, 3.000000)\n");
 }
 
@@ -275,8 +269,7 @@ fn match_selects_the_arm_that_fits() {
 
 #[test]
 fn match_on_a_tuple_with_alternatives_in_one_arm() {
-    let out = run(
-        r#"fn f(n: Int) -> Str {
+    let out = run(r#"fn f(n: Int) -> Str {
                let label = match (n % 3, n % 5) {
                    (0, 0) => "FizzBuzz",
                    (0, _) | (_, 0) => "other",
@@ -289,8 +282,7 @@ fn match_on_a_tuple_with_alternatives_in_one_arm() {
                println(f(3));
                println(f(5));
                println(f(7));
-           }"#,
-    );
+           }"#);
     assert_eq!(out, "FizzBuzz\nother\nother\n7\n");
 }
 
@@ -305,12 +297,18 @@ fn a_match_may_bind_the_scrutinee() {
 
 #[test]
 fn strings_and_characters_print_as_their_contents() {
-    assert_eq!(run(&main_with("println(\"a\\tb\"); print('x'); println(\"\");")), "a\tb\nx\n");
+    assert_eq!(
+        run(&main_with("println(\"a\\tb\"); print('x'); println(\"\");")),
+        "a\tb\nx\n"
+    );
 }
 
 #[test]
 fn print_writes_without_a_newline() {
-    assert_eq!(run(&main_with("print(\"a\"); print(\"b\"); println(\"\");")), "ab\n");
+    assert_eq!(
+        run(&main_with("print(\"a\"); print(\"b\"); println(\"\");")),
+        "ab\n"
+    );
 }
 
 #[test]
@@ -340,7 +338,11 @@ fn integer_division_truncates_toward_zero() {
 fn dividing_by_zero_names_the_position() {
     let err = fails("fn main() {\n    let a = 1;\n    let b = 0;\n    let c = a / b;\n}");
     assert!(err.contains("division by zero"), "was {:?}", err);
-    assert!(err.contains("4:15"), "must name line and column, was {:?}", err);
+    assert!(
+        err.contains("4:15"),
+        "must name line and column, was {:?}",
+        err
+    );
 }
 
 #[test]
@@ -357,7 +359,11 @@ fn indexing_past_the_end_names_the_index_and_the_length() {
         "message must name the index and the length, was {:?}",
         err
     );
-    assert!(err.contains("3:14"), "must name line and column, was {:?}", err);
+    assert!(
+        err.contains("3:14"),
+        "must name line and column, was {:?}",
+        err
+    );
 }
 
 #[test]
@@ -438,7 +444,9 @@ fn assigning_to_an_immutable_parameter_is_rejected() {
 #[test]
 fn a_mutable_parameter_may_be_assigned() {
     assert_eq!(
-        returned("fn f(var a: Int) -> Int { a = a + 1; return a; } fn main() -> Int { return f(41); }"),
+        returned(
+            "fn f(var a: Int) -> Int { a = a + 1; return a; } fn main() -> Int { return f(41); }"
+        ),
         Value::Int(42)
     );
 }
@@ -494,7 +502,8 @@ fn a_struct_literal_with_the_wrong_field_count_is_rejected() {
 
 #[test]
 fn a_match_with_no_matching_arm_is_reported() {
-    let err = fails("fn f(n: Int) -> Int { let a = match n { 1 => 1 }; return a; } fn main() { f(2); }");
+    let err =
+        fails("fn f(n: Int) -> Int { let a = match n { 1 => 1 }; return a; } fn main() { f(2); }");
     assert!(err.contains("no `match` arm matched"), "was {:?}", err);
 }
 
@@ -528,7 +537,8 @@ fn read_example(name: &str) -> String {
         .and_then(Path::parent)
         .expect("the crate lives two levels below the workspace root");
     let path = PathBuf::from(root).join("examples").join(name);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e))
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {}", path.display(), e))
 }
 
 #[test]
@@ -536,11 +546,17 @@ fn every_runtime_error_names_a_line_and_a_column() {
     // The error carries a position, and `Display` prints it. This checks the
     // shape every diagnostic shares.
     let mut out = Vec::new();
-    let err = match run_source("fn main() {\n    let a = 1;\n    let b = 0;\n    a / b;\n}", &mut out) {
+    let err = match run_source(
+        "fn main() {\n    let a = 1;\n    let b = 0;\n    a / b;\n}",
+        &mut out,
+    ) {
         Ok(_) => panic!("expected a division by zero"),
         Err(e) => e,
     };
-    assert!(matches!(err, vortexc::Error::Runtime(RuntimeError::DivideByZero { .. })));
+    assert!(matches!(
+        err,
+        vortexc::Error::Runtime(RuntimeError::DivideByZero { .. })
+    ));
     let text = err.to_string();
     assert!(
         text.starts_with("error at 4:"),

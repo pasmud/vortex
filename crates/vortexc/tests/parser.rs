@@ -48,13 +48,11 @@ fn every_example_program_parses() {
 
 #[test]
 fn a_program_may_declare_functions_structs_and_enums() {
-    let p = ok(
-        r#"
+    let p = ok(r#"
         struct Point { x: Int, y: Int }
         enum Shape { empty, circle(Float) }
         fn main() {}
-        "#,
-    );
+        "#);
     assert_eq!(p.items.len(), 3);
     assert!(matches!(p.items[0], Item::Struct(_)));
     assert!(matches!(p.items[1], Item::Enum(_)));
@@ -110,15 +108,13 @@ fn accepts_a_trailing_comma_in_a_field_list() {
 
 #[test]
 fn parses_an_enum_with_all_three_variant_shapes() {
-    let p = ok(
-        r#"
+    let p = ok(r#"
         enum Shape {
             empty,
             circle(Float),
             rect { w: Float, h: Float },
         }
-        "#,
-    );
+        "#);
     match &p.items[0] {
         Item::Enum(e) => {
             let v = &e.node.variants;
@@ -189,15 +185,13 @@ fn parses_an_if_with_an_if_else_chain() {
 
 #[test]
 fn parses_while_and_for_in_both_forms() {
-    let p = ok(
-        r#"
+    let p = ok(r#"
         fn main() {
             while true { break; }
             for i in 0..=10 { continue; }
             for x in [1, 2] { println(x); }
         }
-        "#,
-    );
+        "#);
     let stmts = &only_fn(&p).node.body.stmts;
     assert_eq!(stmts.len(), 3);
     match &stmts[1].kind {
@@ -234,8 +228,7 @@ fn parses_literals() {
 
 #[test]
 fn parses_every_literal_form() {
-    let p = ok(
-        r#"
+    let p = ok(r#"
         fn main() {
             let a = 1_000;
             let b = 0xFF;
@@ -244,8 +237,7 @@ fn parses_every_literal_form() {
             let e = 1.5e3;
             let f = true;
         }
-        "#,
-    );
+        "#);
     assert_eq!(only_fn(&p).node.body.stmts.len(), 6);
 }
 
@@ -331,7 +323,9 @@ fn parses_a_tuple_and_the_parenthesised_form() {
     let p = ok("fn main() { let a = (1, 2); let b = (3); }");
     let stmts = &only_fn(&p).node.body.stmts;
     match &stmts[0].kind {
-        StmtKind::Let { init, .. } => assert!(matches!(init.kind, ExprKind::Tuple(ref v) if v.len() == 2)),
+        StmtKind::Let { init, .. } => {
+            assert!(matches!(init.kind, ExprKind::Tuple(ref v) if v.len() == 2))
+        }
         other => panic!("expected a let, found {:?}", other),
     }
     match &stmts[1].kind {
@@ -350,8 +344,7 @@ fn parses_a_try_operator() {
 
 #[test]
 fn parses_a_match_on_a_tuple_with_several_alternatives_in_one_arm() {
-    let p = ok(
-        r#"
+    let p = ok(r#"
         fn f(i: Int) -> Str {
             let label = match (i % 3, i % 5) {
                 (0, 0) => "FizzBuzz",
@@ -360,8 +353,7 @@ fn parses_a_match_on_a_tuple_with_several_alternatives_in_one_arm() {
             };
             return label;
         }
-        "#,
-    );
+        "#);
     let f = only_fn(&p);
     match &f.node.body.stmts[0].kind {
         StmtKind::Let { init, .. } => match &init.kind {
@@ -377,8 +369,7 @@ fn parses_a_match_on_a_tuple_with_several_alternatives_in_one_arm() {
 
 #[test]
 fn parses_variant_patterns_with_positional_and_named_bindings() {
-    let p = ok(
-        r#"
+    let p = ok(r#"
         enum Shape { empty, circle(Float), rect { w: Float, h: Float } }
         fn f(s: Shape) -> Float {
             let a = match s {
@@ -388,8 +379,7 @@ fn parses_variant_patterns_with_positional_and_named_bindings() {
             };
             return a;
         }
-        "#,
-    );
+        "#);
     match &f_of(&p).node.body.stmts[0].kind {
         StmtKind::Let { init, .. } => match &init.kind {
             ExprKind::Match { arms, .. } => match &arms[1].patterns[0].kind {
@@ -407,10 +397,9 @@ fn parses_a_binding_pattern() {
     let p = ok("fn f(x: Int) -> Int { let a = match x { y => y, _ => 0 }; return a; }");
     match &f_of(&p).node.body.stmts[0].kind {
         StmtKind::Let { init, .. } => match &init.kind {
-            ExprKind::Match { arms, .. } => assert!(matches!(
-                arms[0].patterns[0].kind,
-                PatternKind::Binding(_)
-            )),
+            ExprKind::Match { arms, .. } => {
+                assert!(matches!(arms[0].patterns[0].kind, PatternKind::Binding(_)))
+            }
             other => panic!("expected a match, found {:?}", other),
         },
         other => panic!("expected a let, found {:?}", other),
@@ -431,16 +420,17 @@ fn f_of(program: &Program) -> &Spanned<FnDecl> {
 #[test]
 fn a_missing_semicolon_names_the_line_column_and_expectation() {
     let err = err("fn main() {\n    let a = 1\n    let b = 2;\n}");
-    assert_eq!(err.pos, Pos { line: 3, col: 5 }, "the caret belongs on the next line");
+    assert_eq!(
+        err.pos,
+        Pos { line: 3, col: 5 },
+        "the caret belongs on the next line"
+    );
     assert!(
         err.message.contains("expected `;`"),
         "the message must say what was expected, was {:?}",
         err.message
     );
-    assert!(
-        err.snippet.contains('^'),
-        "the snippet must carry a caret"
-    );
+    assert!(err.snippet.contains('^'), "the snippet must carry a caret");
     assert!(
         err.to_string().contains("3:5"),
         "the rendered error must name line and column, was {:?}",
@@ -497,22 +487,14 @@ fn a_missing_function_name_names_the_column() {
 fn a_missing_parameter_type_names_the_column() {
     let err = err("fn f(a) {}");
     assert_eq!(err.pos, Pos { line: 1, col: 7 });
-    assert!(
-        err.message.contains("`:`"),
-        "message was {:?}",
-        err.message
-    );
+    assert!(err.message.contains("`:`"), "message was {:?}", err.message);
 }
 
 #[test]
 fn a_missing_colon_in_a_field_list_names_the_column() {
     let err = err("struct Point { x Int }");
     assert_eq!(err.pos, Pos { line: 1, col: 18 });
-    assert!(
-        err.message.contains("`:`"),
-        "message was {:?}",
-        err.message
-    );
+    assert!(err.message.contains("`:`"), "message was {:?}", err.message);
 }
 
 #[test]
@@ -581,8 +563,8 @@ fn examples() -> Vec<(String, String)> {
 
     let dir = PathBuf::from(root).join("examples");
     let mut out = Vec::new();
-    let entries = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("cannot read {}: {}", dir.display(), e));
+    let entries =
+        std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {}: {}", dir.display(), e));
     for entry in entries {
         let path = entry.expect("a readable directory entry").path();
         if path.extension().is_some_and(|e| e == "vx") {
@@ -591,7 +573,11 @@ fn examples() -> Vec<(String, String)> {
             out.push((path.display().to_string(), src));
         }
     }
-    assert!(!out.is_empty(), "no .vx example files found in {}", dir.display());
+    assert!(
+        !out.is_empty(),
+        "no .vx example files found in {}",
+        dir.display()
+    );
     out.sort();
     out
 }

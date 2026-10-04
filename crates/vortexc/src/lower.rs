@@ -204,7 +204,11 @@ impl Lowerer {
 
     /// Lowers a block inside an already open scope, used for an `if` or `else`
     /// branch, which does not get a frame of its own.
-    fn block_in_scope(&mut self, b: &ast::Block, st: &mut FnState) -> Result<ir::Block, LowerError> {
+    fn block_in_scope(
+        &mut self,
+        b: &ast::Block,
+        st: &mut FnState,
+    ) -> Result<ir::Block, LowerError> {
         let mut stmts = Vec::new();
         for s in &b.stmts {
             self.stmt(s, st, &mut stmts)?;
@@ -592,11 +596,7 @@ impl Lowerer {
                 }
             }
 
-            ast::ExprKind::VariantCall {
-                ty,
-                variant,
-                args,
-            } => {
+            ast::ExprKind::VariantCall { ty, variant, args } => {
                 self.variant(ty, variant, pos, args.len())?;
                 let mut lowered = Vec::with_capacity(args.len());
                 for a in args {

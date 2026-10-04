@@ -11,9 +11,14 @@ readable syntax, precise diagnostics and an explicit memory safety model. See
 
 ## Current state
 
-Stage 1 of the roadmap. The specification exists, the lexer is implemented and
-tested, the benchmark harness runs, and CI runs the tests. There is no
-evaluator yet, so no Vortex program can run and there are no benchmark results.
+Stage 2 of the roadmap. The lexer, the parser, the AST, the lowering pass and
+the tree interpreter are implemented and tested, and every program in
+`examples/` runs. The type checker has not started.
+
+There is still no Vortex benchmark result. Vortex v0.1 cannot write the
+baseline workload, because there is no index assignment and no list of a
+computed length. `bench/vortex/README.md` explains that, and
+`SPEC.md` section 8.2 lists both gaps. No Vortex time is recorded or estimated.
 
 ## Layout
 
@@ -21,10 +26,15 @@ evaluator yet, so no Vortex program can run and there are no benchmark results.
 | --- | --- |
 | `SPEC.md` | The language specification. Every later stage matches it. |
 | `ROADMAP.md` | Ordered milestones with measurable acceptance criteria. |
-| `BENCHMARKS.md` | Machine specification and compiler versions. No results yet. |
-| `crates/vortexc/` | The compiler. Stage 1 contains the lexer. |
-| `examples/` | Vortex source files used by the tests. |
-| `bench/` | The benchmark harness, `bench/run.sh`, and the C and Rust baselines. |
+| `BENCHMARKS.md` | Machine specification and compiler versions. No Vortex results yet. |
+| `crates/vortexc/src/lexer.rs` | Tokens, from stage 1. |
+| `crates/vortexc/src/parser.rs` | Recursive descent parser. |
+| `crates/vortexc/src/ast.rs` | The surface syntax tree. |
+| `crates/vortexc/src/ir.rs` | The lowered form shared by the interpreter and the future VM. |
+| `crates/vortexc/src/lower.rs` | Name resolution and the lowering pass. |
+| `crates/vortexc/src/interp.rs` | The tree interpreter. |
+| `examples/` | Vortex source files, executed by the interpreter tests. |
+| `bench/` | The harness, `bench/run.sh`, the C and Rust baselines. |
 | `scripts/` | Small repository checks used by CI. |
 
 ## Working on Vortex
