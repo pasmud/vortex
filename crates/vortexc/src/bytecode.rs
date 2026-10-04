@@ -97,6 +97,9 @@ pub enum Op {
     LoopExit,
     /// End of a loop body. `on_break` is where a `break` jumps.
     EndLoop { on_break: usize },
+    /// Restore the stack to where the loop body started. A break jumps past
+    /// EndLoop, so it needs the same restoration where it lands.
+    RestoreStack,
     /// Test the value on top of the stack against a pattern. A true result
     /// falls through and leaves the subject on the stack when `keep` is set,
     /// and a false result jumps to `on_fail`.
@@ -500,18 +503,28 @@ impl FnCompiler {
                 self.emit(Op::Store(*var_slot), *pos);
 
                 self.loops += 1;
+                self.exits.push(Vec::new());
                 self.block(body)?;
                 self.loops -= 1;
-                self.emit(Op::EndLoop { on_break: 0 }, *pos);
+
+                // EndLoop first, so a continue falls through into the step
+                // below instead of skipping it.
+                let end_loop = self.emit_at(Op::EndLoop { on_break: 0 }, *pos);
+                self.close_continues(end_loop);
 
                 self.emit(Op::Load(idx), *pos);
                 self.emit(Op::Const(ir::Const::Int(1)), *pos);
                 self.emit(Op::Binary(ast::BinOp::Add), *pos);
                 self.emit(Op::Store(idx), *pos);
+
                 self.emit(Op::Jump(top), *pos);
+                // A break lands on the exit rather than on EndLoop, so the
+                // exit restores the stack the same way.
+                self.emit(Op::RestoreStack, *pos);
                 let end = self.here();
+                self.close_breaks(end);
                 self.patch(exit, end);
-                self.patch_loop_break(self.instrs.len() - 4, end);
+                self.patch_loop_break(end_loop, end);
                 self.emit(Op::Const(ir::Const::Int(0)), *pos);
             }
         }
@@ -762,6 +775,7 @@ impl Instr {
             Op::LoopEnter => "loop-enter".to_string(),
             Op::LoopExit => "loop-exit".to_string(),
             Op::EndLoop { on_break } => format!("end-loop break->{}", on_break),
+            Op::RestoreStack => "restore-stack".to_string(),
             Op::MatchTest { on_fail, keep } => {
                 format!(
                     "match-test fail->{}{}",

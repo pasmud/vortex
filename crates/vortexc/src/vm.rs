@@ -76,10 +76,14 @@ pub fn run_collecting_output(
 }
 
 /// Why a loop body stopped.
+///
+/// There is no Break: the jump after a break instruction leaves the loop
+/// outright, so nothing has to record that it happened. Only a continue needs a
+/// flag, because it lands on EndLoop and has to be told apart from falling
+/// through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flow {
     Normal,
-    Break,
     Continue,
 }
 
@@ -295,14 +299,13 @@ impl<'a> Vm<'a> {
                             detail: "`break` outside a loop".into(),
                         });
                     }
-                    // The jump after this instruction leaves the loop, so no
-                    // EndLoop will clear the flag. It is cleared here instead,
-                    // or the next loop to reach an EndLoop sees a stale Break
-                    // and leaves early.
-                    frame.flow = Flow::Break;
-                    // The jump that follows leaves the loop without reaching
-                    // EndLoop, so the loop depth and the stack depth it opened
-                    // are unwound here.
+                    // The jump after this instruction leaves the loop, so
+                    // EndLoop is never reached and nothing would clear a flag
+                    // set here. It stays Normal and the jump does the leaving,
+                    // which is why a loop after a break still runs.
+                    frame.flow = Flow::Normal;
+                    // The loop depth and stack base the loop opened are
+                    // unwound here, since the jump skips EndLoop.
                     frame.loops = frame.loops.saturating_sub(1);
                     frame.loop_bases.pop();
                 }
@@ -387,6 +390,14 @@ impl<'a> Vm<'a> {
                         frame.loop_bases.pop();
                     }
                 }
+                // A break lands on the loop exit rather than on EndLoop, so the
+                // exit restores the stack the same way EndLoop does.
+                Op::RestoreStack => {
+                    if let Some(base) = frame.loop_bases.last().copied() {
+                        frame.stack.truncate(base);
+                    }
+                    frame.loop_bases.pop();
+                }
                 Op::EndLoop { on_break } => {
                     // A continue lands here and the flag decides whether the
                     // loop repeats. A break never reaches this instruction, so
@@ -395,19 +406,11 @@ impl<'a> Vm<'a> {
                     // whether the loop stops or repeats, and is cleared either
                     // way, which is what makes a nested loop work: the inner
                     // loop consumes the flag before the outer one sees it.
-                    match frame.flow {
-                        Flow::Break => {
-                            // A break reaches this only when it did not jump,
-                            // and it unwound itself on the way out otherwise.
-                            frame.flow = Flow::Normal;
-                            frame.ip = *on_break;
-                        }
-                        Flow::Continue => {
-                            // A continue lands here and the loop repeats, so
-                            // the loop is still open and its depth stays.
-                            frame.flow = Flow::Normal;
-                        }
-                        Flow::Normal => {}
+                    let _ = on_break;
+                    if frame.flow == Flow::Continue {
+                        // A continue lands here and the loop repeats, so the
+                        // loop is still open and its depth stays.
+                        frame.flow = Flow::Normal;
                     }
                     // Restore the stack depth the body started from. The body
                     // leaves a different number of values depending on whether
