@@ -1,0 +1,9 @@
+# Build output from `cargo build` and `cargo test`.
+/target
+**/target
+
+# Benchmark binaries built by bench/run.sh.
+/bench/build
+
+# Agent tooling state, not part of the project source.
+/.commandcode

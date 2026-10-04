@@ -1,0 +1,19 @@
+// A first Vortex program. Stage 1 only lexes this file; stage 2 runs it.
+//
+// The gcd function from SPEC.md section 8.
+
+fn gcd(a: Int, b: Int) -> Int {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    return a;
+}
+
+// The `let` binding below is immutable, and the function arguments are mutable.
+fn main() -> Int {
+    var a = 1071;
+    var b = 462;
+    return gcd(a, b);
+}

@@ -1,0 +1,10 @@
+[package]
+name = "vortexc"
+version = "0.1.0"
+edition = "2021"
+description = "The Vortex compiler"
+license = "MIT"
+
+[dependencies]
+
+[dev-dependencies]
