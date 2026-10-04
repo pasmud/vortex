@@ -16,6 +16,7 @@ pub mod span;
 pub mod token;
 pub mod types;
 pub mod value;
+pub mod vm;
 
 pub use checker::{check, TypeError};
 pub use lexer::{lex, LexError};
@@ -50,12 +51,29 @@ pub fn check_source(src: &str) -> Result<(ir::Program, types::Decls), Error> {
     Ok((lowered, decls))
 }
 
+/// Runs a program on the virtual machine, writing whatever it prints to `out`.
+///
+/// The pipeline is the same as [`run_source`], with the bytecode compiler and
+/// the VM in place of the tree interpreter. The stage 2 and 3 tests run against
+/// both through this, so neither engine is checked against weaker expectations
+/// than the other.
+pub fn run_on_vm(src: &str, out: &mut dyn std::io::Write) -> Result<Value, Error> {
+    let program = parse(src).map_err(Error::Parse)?;
+    let lowered = lower(&program).map_err(Error::Lower)?;
+    check(&lowered).map_err(Error::Type)?;
+    let compiled = bytecode::compile(&lowered).map_err(|e| Error::Compile(e.message))?;
+    let value = vm::run(&compiled, out).map_err(Error::Runtime)?;
+    Ok(value)
+}
+
 /// A failure in any stage of the pipeline.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     Parse(ParseError),
     Lower(LowerError),
     Type(TypeError),
+    /// The bytecode compiler refused the program.
+    Compile(String),
     Runtime(RuntimeError),
 }
 
@@ -66,6 +84,7 @@ impl Error {
             Error::Parse(_) => "parse",
             Error::Lower(_) => "lower",
             Error::Type(_) => "check",
+            Error::Compile(_) => "compile",
             Error::Runtime(_) => "run",
         }
     }
@@ -77,6 +96,7 @@ impl std::fmt::Display for Error {
             Error::Parse(e) => write!(f, "{}", e),
             Error::Lower(e) => write!(f, "{}", e),
             Error::Type(e) => write!(f, "{}", e),
+            Error::Compile(e) => write!(f, "error: {}", e),
             Error::Runtime(e) => write!(f, "{}", e),
         }
     }

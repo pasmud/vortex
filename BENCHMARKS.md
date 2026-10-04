@@ -2,14 +2,21 @@
 
 ## A recorded Vortex result
 
-The comparison table has a Vortex row. It carries the same checksum as the C and
-Rust rows, and it was produced by `bench/run.sh` on the machine below.
+The comparison table has a Vortex row. **All three rows run the same program**,
+a sieve of Eratosthenes over 2,000,000 plus a 256 by 256 floating point matrix
+multiply, and all three print the same checksum. The checksum is shown in full,
+including the float, so a reader can see that the same work was measured rather
+than being asked to take it on trust.
 
-| Language | Wall clock | Checksum |
-| --- | --- | --- |
-| C | 18 ms | 1179908154 |
-| Rust | 17 ms | 1179908154 |
-| Vortex, tree interpreter | 2780 ms | 1179908154 |
+| Language | Wall clock | Sieve sum | Matrix sum | Full checksum |
+| --- | --- | --- | --- | --- |
+| C | 18 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Rust | 17 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Vortex, tree interpreter | 2780 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+
+The Vortex matrix half needed the `as` cast, which stage 4 added. Before it, the
+Vortex row covered the sieve only and the table said so. It no longer needs to,
+and this table reflects what was measured rather than what was possible before.
 
 The raw harness output is committed at
 `bench/results/stage3-tree-interpreter.txt`, produced by:
@@ -27,22 +34,22 @@ Nothing here claims Vortex is fast. It does not yet have the evidence to.
 
 ## What the three rows measure
 
-All three implement the sieve of Eratosthenes from `bench/c/sieve.c` and
-`bench/rust/src/main.rs`, and all three print `checksum 1179908154`.
+All three implement the workload in `bench/c/sieve.c` and
+`bench/rust/src/main.rs`, and all three print `checksum 1179908154 3314.003906`.
 
-The Vortex checksum matches, and getting there required one non obvious step.
+Matching that needed two non obvious steps, both recorded rather than stumbled on.
+
 The C baseline accumulates into a `uint32_t`, so the sum wraps at 2^32. Vortex
 `Int` is 64 bit, so a plain sum gives 142913828922 instead. `bench/vortex/sieve.vx`
 masks to 32 bits on every addition to match the baseline arithmetic exactly.
 Masking rather than widening the Vortex type is deliberate: a Vortex program
 that wants the true sum should not have to imitate a C overflow.
 
-The Vortex row covers the sieve only. The baseline checksum also covers a
-floating point matrix multiply, which Vortex cannot yet write because there is no
-`as` cast and `SPEC.md` section 6.1 rule 4 forbids the implicit `Int` to `Float`
-conversion. The integer part of the checksum is what the harness compares, and
-it is the same in all three. The floating point half is simply absent from the
-Vortex row, and this is stated rather than papered over.
+The matrix half needs `Int` to `Float` and back, which `SPEC.md` section 6.1
+rule 4 forbids implicitly and requires to be written as `as`. Stage 4 added the
+cast, and with it the float half became expressible. An earlier revision of this
+file recorded that the Vortex row was sieve only; that was true when the cast
+did not exist and is corrected here.
 
 ## What made it fast enough to run at all
 

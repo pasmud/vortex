@@ -50,6 +50,14 @@ pub enum Op {
     Unary { neg: bool },
     /// Call a function, a builtin, a constructor or a variant.
     Call { target: Target, arity: u32 },
+    /// How many values a following `BuildList` should gather. It is carried on
+    /// the instruction itself so the VM does not have to count.
+    ListLen(usize),
+    /// Push a pattern for a following `MatchTest`.
+    BuildPattern(Pattern),
+    /// Push the position of a payload within a variant, used when a pattern
+    /// binds one.
+    PayloadIndex(usize),
     /// Read a list element. The base and the index are below it.
     Index,
     /// Store into a list element. The slot, the index and the value are below.
@@ -74,8 +82,14 @@ pub enum Op {
     Continue,
     /// Return the value on top of the stack.
     Return,
-    /// Match the value below against arm `arm` of the enclosing match.
-    MatchTest { arm: u32 },
+    /// Read one named field of the value below.
+    FieldRead(String),
+    /// End of a loop body. `on_break` is where a `break` jumps.
+    EndLoop { on_break: usize },
+    /// Test the value on top of the stack against a pattern. A true result
+    /// falls through and leaves the subject on the stack when `keep` is set,
+    /// and a false result jumps to `on_fail`.
+    MatchTest { on_fail: usize, keep: bool },
     /// No arm of a match matched.
     MatchNone,
 }
@@ -110,6 +124,23 @@ impl Target {
     }
 }
 
+/// A pattern, in the form the VM tests against.
+///
+/// The compiler flattens a pattern into this so the VM tests a value without
+/// walking a tree, which is the same reason the rest of the program is
+/// bytecode.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Pattern {
+    /// Matches anything.
+    Wildcard,
+    /// Matches a value equal to this.
+    Literal(crate::ir::Const),
+    /// Matches a list or tuple element by position.
+    Tuple(Vec<Pattern>),
+    /// Matches an enum value of this variant.
+    Variant { ty: String, variant: String },
+}
+
 /// A function's bytecode.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Code {
@@ -125,6 +156,11 @@ pub struct Code {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub code: Vec<Code>,
+    /// The struct declarations, so an executor can build a struct without
+    /// carrying the lowered form as well.
+    pub structs: Vec<ir::StructDef>,
+    /// The enum declarations, for the same reason.
+    pub enums: Vec<ir::EnumDef>,
 }
 
 /// A compile failure, shaped like every other diagnostic.
@@ -144,13 +180,21 @@ impl std::error::Error for CompileError {}
 
 /// Compiles a lowered program to bytecode.
 pub fn compile(program: &ir::Program) -> Result<Program, CompileError> {
-    let mut out = Vec::new();
+    let mut code = Vec::new();
+    let mut structs = Vec::new();
+    let mut enums = Vec::new();
     for item in &program.items {
-        if let ir::Item::Function(f) = item {
-            out.push(function(f)?);
+        match item {
+            ir::Item::Function(f) => code.push(function(f)?),
+            ir::Item::Struct(s) => structs.push(s.clone()),
+            ir::Item::Enum(e) => enums.push(e.clone()),
         }
     }
-    Ok(Program { code: out })
+    Ok(Program {
+        code,
+        structs,
+        enums,
+    })
 }
 
 /// The two extra slots a `for` loop over a list keeps: the sequence and the
@@ -247,9 +291,11 @@ impl FnCompiler {
                 self.loops += 1;
                 self.block(body)?;
                 self.loops -= 1;
+                self.emit(Op::EndLoop { on_break: 0 }, *pos);
                 self.emit(Op::Jump(top), *pos);
                 let end = self.here();
                 self.patch(exit, end);
+                self.patch_loop_break(self.instrs.len() - 3, end);
                 self.emit(Op::Const(ir::Const::Int(0)), *pos);
             }
 
@@ -283,6 +329,7 @@ impl FnCompiler {
                 self.loops += 1;
                 self.block(body)?;
                 self.loops -= 1;
+                self.emit(Op::EndLoop { on_break: 0 }, *pos);
 
                 self.emit(Op::Load(*var_slot), *pos);
                 self.emit(Op::Const(ir::Const::Int(1)), *pos);
@@ -291,6 +338,7 @@ impl FnCompiler {
                 self.emit(Op::Jump(top), *pos);
                 let end = self.here();
                 self.patch(exit, end);
+                self.patch_loop_break(self.instrs.len() - 4, end);
                 self.emit(Op::Const(ir::Const::Int(0)), *pos);
             }
 
@@ -324,6 +372,7 @@ impl FnCompiler {
                 self.loops += 1;
                 self.block(body)?;
                 self.loops -= 1;
+                self.emit(Op::EndLoop { on_break: 0 }, *pos);
 
                 self.emit(Op::Load(idx), *pos);
                 self.emit(Op::Const(ir::Const::Int(1)), *pos);
@@ -332,10 +381,26 @@ impl FnCompiler {
                 self.emit(Op::Jump(top), *pos);
                 let end = self.here();
                 self.patch(exit, end);
+                self.patch_loop_break(self.instrs.len() - 4, end);
                 self.emit(Op::Const(ir::Const::Int(0)), *pos);
             }
         }
         Ok(())
+    }
+
+    /// Points the `EndLoop` at `at` back at `target`, which is where a break
+    /// leaves the loop.
+    fn patch_loop_break(&mut self, at: usize, target: usize) {
+        if let Op::EndLoop { on_break } = &mut self.instrs[at].op {
+            *on_break = target;
+        }
+    }
+
+    /// Points a failed pattern test at `target`.
+    fn patch_match_fail(&mut self, at: usize, target: usize) {
+        if let Op::MatchTest { on_fail, .. } = &mut self.instrs[at].op {
+            *on_fail = target;
+        }
     }
 
     fn emit_at(&mut self, op: Op, pos: Pos) -> usize {
@@ -362,6 +427,7 @@ impl FnCompiler {
                 self.emit(Op::Binary(*op), pos);
             }
             ir::Expr::List { items, tuple, .. } => {
+                self.emit(Op::ListLen(items.len()), pos);
                 for i in items {
                     self.expr(i)?;
                 }
@@ -387,13 +453,7 @@ impl FnCompiler {
             }
             ir::Expr::Field { base, name, .. } => {
                 self.expr(base)?;
-                self.emit(
-                    Op::Call {
-                        target: Target::Field(name.clone()),
-                        arity: 1,
-                    },
-                    pos,
-                );
+                self.emit(Op::FieldRead(name.clone()), pos);
             }
             ir::Expr::Try { inner, .. } => self.expr(inner)?,
             ir::Expr::Cast { value, to, .. } => {
@@ -429,15 +489,46 @@ impl FnCompiler {
                     }
                 }
             }
-            ir::Expr::Match { arms, .. } => {
-                // Each arm is tested in turn and its body jumps past the
-                // remaining tests. The scrutinee stays on the stack so a test
-                // can read it.
+            ir::Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                // The scrutinee is duplicated for each arm, because a test
+                // consumes the copy it reads. Duplicating costs one
+                // instruction per arm and removes the need for the VM to know
+                // how deep on the stack a scrutinee sits.
                 let mut ends = Vec::new();
-                for (i, arm) in arms.iter().enumerate() {
-                    self.emit(Op::MatchTest { arm: i as u32 }, pos);
+                for arm in arms.iter() {
+                    // A pattern that binds names needs the matched value
+                    // afterwards, so a test that succeeds leaves the subject on
+                    // the stack. A pattern that binds nothing does not, which
+                    // is why the instruction carries whether to keep it.
+                    self.expr(scrutinee)?;
+                    self.emit(Op::BuildPattern(pattern_of(&arm.pattern)), pos);
+                    let test = self.emit_at(
+                        Op::MatchTest {
+                            on_fail: 0,
+                            keep: binds(&arm.pattern),
+                        },
+                        pos,
+                    );
+                    // Each payload is read by position, so the index is pushed
+                    // before the read rather than kept in a slot.
+                    match &arm.pattern {
+                        // A pattern that binds the whole value is a plain store.
+                        ir::Pattern::Binding(b) => self.emit(Op::Store(b.slot), pos),
+                        // A variant pattern reads its payloads by position.
+                        ir::Pattern::Variant { bindings, .. } => {
+                            for (i, b) in bindings.iter().enumerate() {
+                                self.emit(Op::PayloadIndex(i), pos);
+                                self.emit(Op::Store(b.slot), pos);
+                            }
+                        }
+                        _ => {}
+                    }
                     self.expr(&arm.body)?;
                     ends.push(self.emit_at(Op::Jump(0), pos));
+                    let next = self.here();
+                    self.patch_match_fail(test, next);
                 }
                 self.emit(Op::MatchNone, pos);
                 let end = self.here();
@@ -459,6 +550,29 @@ impl FnCompiler {
             }
         }
         Ok(())
+    }
+}
+
+/// Whether a pattern binds names, and so needs the subject kept.
+fn binds(p: &ir::Pattern) -> bool {
+    match p {
+        ir::Pattern::Binding(_) => true,
+        ir::Pattern::Variant { bindings, .. } => !bindings.is_empty(),
+        _ => false,
+    }
+}
+
+/// Flattens a lowered pattern into the form the VM tests against.
+fn pattern_of(p: &ir::Pattern) -> Pattern {
+    match p {
+        ir::Pattern::Wildcard => Pattern::Wildcard,
+        ir::Pattern::Literal(c) => Pattern::Literal(c.clone()),
+        ir::Pattern::Tuple(items) => Pattern::Tuple(items.iter().map(pattern_of).collect()),
+        ir::Pattern::Binding(_) => Pattern::Wildcard,
+        ir::Pattern::Variant { ty, variant, .. } => Pattern::Variant {
+            ty: ty.clone(),
+            variant: variant.clone(),
+        },
     }
 }
 
@@ -502,9 +616,44 @@ impl Instr {
             Op::Break => "break".to_string(),
             Op::Continue => "continue".to_string(),
             Op::Return => "return".to_string(),
-            Op::MatchTest { arm } => format!("match-test {}", arm),
+            Op::ListLen(n) => format!("list-len {}", n),
+            Op::BuildPattern(p) => format!("build-pattern {}", pattern_text(p)),
+            Op::FieldRead(n) => format!("field-read {}", n),
+            Op::EndLoop { on_break } => format!("end-loop break->{}", on_break),
+            Op::MatchTest { on_fail, keep } => {
+                format!(
+                    "match-test fail->{}{}",
+                    on_fail,
+                    if *keep { " keep" } else { "" }
+                )
+            }
+            Op::PayloadIndex(n) => format!("payload-index {}", n),
             Op::MatchNone => "match-none".to_string(),
         }
+    }
+}
+
+/// A constant as text, for the disassembly command.
+pub fn const_text(c: &ir::Const) -> String {
+    match c {
+        ir::Const::Int(v) => format!("int {}", v),
+        ir::Const::Float(v) => format!("float {}", v),
+        ir::Const::Str(v) => format!("str {:?}", v),
+        ir::Const::Char(v) => format!("char {:?}", v),
+        ir::Const::Bool(v) => format!("bool {}", v),
+    }
+}
+
+/// A pattern as text, for the disassembly command.
+pub fn pattern_text(p: &Pattern) -> String {
+    match p {
+        Pattern::Wildcard => "_".to_string(),
+        Pattern::Literal(c) => const_text(c),
+        Pattern::Tuple(items) => {
+            let parts: Vec<String> = items.iter().map(pattern_text).collect();
+            format!("({})", parts.join(", "))
+        }
+        Pattern::Variant { ty, variant } => format!("{}.{}", ty, variant),
     }
 }
 
