@@ -399,10 +399,14 @@ impl FnCompiler {
                 // later loop would inherit this one and patch against it.
                 let end_loop = self.emit_at(Op::EndLoop { on_break: 0 }, *pos);
                 self.close_continues(end_loop);
-                let after = self.emit_at(Op::Jump(top), *pos);
-                self.close_breaks(after);
+                self.emit(Op::Jump(top), *pos);
 
+                // A break lands on the loop exit, which is the same place the
+                // condition's jump-false lands. It used to land on the back
+                // jump instead, so it went round the loop again and a loop
+                // with a break in it never stopped.
                 let end = self.here();
+                self.close_breaks(end);
                 self.patch(exit, end);
                 self.patch_loop_break(end_loop, end);
                 self.emit(Op::Const(ir::Const::Int(0)), *pos);
@@ -454,10 +458,9 @@ impl FnCompiler {
                 self.close_continues(end_loop);
 
                 self.emit(Op::Jump(top), *pos);
-                let after = self.here();
-                self.close_breaks(after);
 
                 let end = self.here();
+                self.close_breaks(end);
                 self.patch(exit, end);
                 self.patch_loop_break(end_loop, end);
                 self.emit(Op::Const(ir::Const::Int(0)), *pos);

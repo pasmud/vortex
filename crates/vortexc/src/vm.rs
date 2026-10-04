@@ -295,7 +295,16 @@ impl<'a> Vm<'a> {
                             detail: "`break` outside a loop".into(),
                         });
                     }
+                    // The jump after this instruction leaves the loop, so no
+                    // EndLoop will clear the flag. It is cleared here instead,
+                    // or the next loop to reach an EndLoop sees a stale Break
+                    // and leaves early.
                     frame.flow = Flow::Break;
+                    // The jump that follows leaves the loop without reaching
+                    // EndLoop, so the loop depth and the stack depth it opened
+                    // are unwound here.
+                    frame.loops = frame.loops.saturating_sub(1);
+                    frame.loop_bases.pop();
                 }
                 Op::Continue => {
                     if frame.loops == 0 {
@@ -371,6 +380,9 @@ impl<'a> Vm<'a> {
                     frame.loop_bases.pop();
                 }
                 Op::EndLoop { on_break } => {
+                    // A continue lands here and the flag decides whether the
+                    // loop repeats. A break never reaches this instruction, so
+                    // the flag is cleared where the break is raised.
                     // A loop body ends here. A flag set inside it decides
                     // whether the loop stops or repeats, and is cleared either
                     // way, which is what makes a nested loop work: the inner
