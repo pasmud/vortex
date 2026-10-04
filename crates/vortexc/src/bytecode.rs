@@ -436,10 +436,8 @@ impl FnCompiler {
                 let limit = self.take_loop_slot();
                 self.emit(Op::Store(limit + 1), *pos);
 
-                let top = self.here();
-                // LoopEnter comes before the condition so it runs once when the
-                // loop is entered rather than on every iteration.
                 self.emit(Op::LoopEnter, *pos);
+                let top = self.here();
                 self.emit(Op::Load(*var_slot), *pos);
                 self.emit(Op::Load(limit + 1), *pos);
                 self.emit(Op::Binary(ast::BinOp::Lt), *pos);
@@ -450,17 +448,17 @@ impl FnCompiler {
                 self.block(body)?;
                 self.loops -= 1;
 
-                // The increment comes before EndLoop so that a continue, which
-                // lands on EndLoop, still moves the counter on. A break jumps
-                // past the increment instead, so the counter is left alone and
-                // the loop condition stops it.
+                // EndLoop comes first so that a continue, which lands on it,
+                // falls through into the increment below. The increment sat
+                // before EndLoop, so a continue skipped it and the counter
+                // never moved.
+                let end_loop = self.emit_at(Op::EndLoop { on_break: 0 }, *pos);
+                self.close_continues(end_loop);
+
                 self.emit(Op::Load(*var_slot), *pos);
                 self.emit(Op::Const(ir::Const::Int(1)), *pos);
                 self.emit(Op::Binary(ast::BinOp::Add), *pos);
                 self.emit(Op::Store(*var_slot), *pos);
-
-                let end_loop = self.emit_at(Op::EndLoop { on_break: 0 }, *pos);
-                self.close_continues(end_loop);
 
                 self.emit(Op::Jump(top), *pos);
 
@@ -485,8 +483,8 @@ impl FnCompiler {
                 self.emit(Op::Const(ir::Const::Int(0)), *pos);
                 self.emit(Op::Store(idx), *pos);
 
-                let top = self.here();
                 self.emit(Op::LoopEnter, *pos);
+                let top = self.here();
                 // The condition is index < length of the sequence. It compared
                 // the index with itself before, which is never true, so the loop
                 // either never ran or never stopped.

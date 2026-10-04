@@ -395,19 +395,18 @@ impl<'a> Vm<'a> {
                     // whether the loop stops or repeats, and is cleared either
                     // way, which is what makes a nested loop work: the inner
                     // loop consumes the flag before the outer one sees it.
-                    // EndLoop is the loop boundary, so the loop is left here.
-                    // A break already unwound itself on the way out, because it
-                    // jumps rather than falling through to this instruction.
-                    if frame.flow != Flow::Break {
-                        frame.loops = frame.loops.saturating_sub(1);
-                        frame.loop_bases.pop();
-                    }
                     match frame.flow {
                         Flow::Break => {
+                            // A break reaches this only when it did not jump,
+                            // and it unwound itself on the way out otherwise.
                             frame.flow = Flow::Normal;
                             frame.ip = *on_break;
                         }
-                        Flow::Continue => frame.flow = Flow::Normal,
+                        Flow::Continue => {
+                            // A continue lands here and the loop repeats, so
+                            // the loop is still open and its depth stays.
+                            frame.flow = Flow::Normal;
+                        }
                         Flow::Normal => {}
                     }
                     // Restore the stack depth the body started from. The body
