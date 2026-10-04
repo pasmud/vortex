@@ -208,14 +208,16 @@ pub fn compile(program: &ir::Program) -> Result<Program, CompileError> {
     })
 }
 
-/// The two extra slots a `for` loop over a list keeps: the sequence and the
-/// index into it. They live above the frame the lowering pass sized, so a
-/// nested loop gets its own pair.
+/// The slots one loop keeps above the frame the lowering pass sized: the limit
+/// for a counting `for`, or the sequence and the index for a `for` over a list.
+/// A function with several loops needs several pairs, so the frame grows by
+/// however many the function used.
 const LOOP_SLOTS: usize = 2;
 
 fn function(f: &ir::Fn) -> Result<Code, CompileError> {
     let mut c = FnCompiler {
         instrs: Vec::new(),
+        next_loop_slot: f.frame_size,
         loop_base: f.frame_size,
         loops: 0,
         exits: Vec::new(),
@@ -232,7 +234,7 @@ fn function(f: &ir::Fn) -> Result<Code, CompileError> {
     Ok(Code {
         name: f.name.clone(),
         instrs: c.instrs,
-        frame_size: f.frame_size + LOOP_SLOTS,
+        frame_size: c.next_loop_slot.max(f.frame_size + LOOP_SLOTS),
         pos: f.pos,
     })
 }
@@ -253,7 +255,12 @@ struct FnCompiler {
     /// The jump of each `break` or `continue` in the loop currently being
     /// compiled, one list per open loop so a nested loop keeps its own.
     exits: Vec<Vec<(usize, ExitKind)>>,
-    /// The first slot a loop over a list may use.
+    /// The lowest scratch slot not yet used by a loop in this function. Two
+    /// loops in a row each take their own pair, because a second loop reusing
+    /// the first one's slots made the first loop's condition never stop.
+    next_loop_slot: usize,
+    /// The first slot the loop currently being compiled may use, which is
+    /// below the pair a nested loop takes.
     loop_base: usize,
     /// How many such loops are currently open, so a nested loop gets its own
     /// slots rather than sharing its enclosing one's.
@@ -263,6 +270,20 @@ struct FnCompiler {
 impl FnCompiler {
     fn emit(&mut self, op: Op, pos: Pos) {
         self.instrs.push(Instr { op, pos });
+    }
+
+    /// Reserves the pair of scratch slots a loop needs and returns the first.
+    ///
+    /// Sequential loops each take their own pair. Sharing one pair made the
+    /// second loop overwrite the first loop's limit, so the first loop compared
+    /// its counter against a value that kept changing and never stopped.
+    fn take_loop_slot(&mut self) -> usize {
+        let slot = self.next_loop_slot;
+        self.next_loop_slot += 2;
+        // A nested loop may use the pair its enclosing loop took, because the
+        // enclosing one is suspended while it runs.
+        self.loop_base = slot;
+        slot
     }
 
     /// Records a break or continue jump for the innermost open loop.
@@ -405,7 +426,7 @@ impl FnCompiler {
                     self.emit(Op::Binary(ast::BinOp::Add), *pos);
                 }
                 // The limit goes in the pair of slots above the frame.
-                let limit = self.loop_base + self.loops * 2;
+                let limit = self.take_loop_slot();
                 self.emit(Op::Store(limit + 1), *pos);
 
                 let top = self.here();
@@ -448,7 +469,7 @@ impl FnCompiler {
                 body,
                 pos,
             } => {
-                let seq = self.loop_base + self.loops * 2;
+                let seq = self.take_loop_slot();
                 let idx = seq + 1;
 
                 self.expr(iterable)?;
