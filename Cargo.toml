@@ -1,0 +1,12 @@
+[workspace]
+members = ["crates/vortexc"]
+# The benchmark baseline is built by bench/run.sh, not by `cargo test
+# --workspace`, so it stays out of the workspace and keeps its own release
+# profile.
+exclude = ["bench/rust"]
+resolver = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"

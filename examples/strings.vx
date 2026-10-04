@@ -1,0 +1,19 @@
+// Comments, escapes and literals. Stage 1 only lexes this file; stage 2 runs it.
+//
+// A line comment, a block comment and a nested block comment.
+
+/* This block comment contains // a line comment inside it.
+   It also nests: /* an inner comment */ and the outer one continues. */
+
+fn describe() -> Str {
+    let tab = "\t";
+    let newline = "\n";
+    let quote = "\"";
+    let backslash = "\\";
+    let heart = "\u{2764}";
+    let bell = "\x07";
+    let pi = 3.14159;
+    let masked = 0b1010_1010 & 0xFF;
+    let joined = "Fizz" + "Buzz";
+    return tab + newline + quote + backslash + heart + bell;
+}
