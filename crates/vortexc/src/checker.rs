@@ -611,7 +611,12 @@ impl<'a> Checker<'a> {
             } => {
                 let subject = self.expr(scrutinee, env)?;
                 let mut result: Option<Type> = None;
-                let mut exhaustive = false;
+                let mut wildcard = false;
+                // The variants an enum `match` names, so that one naming every
+                // variant is recognised as exhaustive without a `_` arm.
+                let mut covered: Vec<String> = Vec::new();
+                let is_enum = matches!(subject, Type::Named(id) if self.decls.get(id).is_enum);
+
                 for arm in arms {
                     if !self.pattern_matches(&arm.pattern, &subject, env, *pos)? {
                         // An arm whose pattern cannot match the subject is dead
@@ -621,8 +626,10 @@ impl<'a> Checker<'a> {
                             format!("this arm can never match a `{}`", self.name_of(&subject)),
                         );
                     }
-                    if matches!(arm.pattern, ir::Pattern::Wildcard) {
-                        exhaustive = true;
+                    match &arm.pattern {
+                        ir::Pattern::Wildcard => wildcard = true,
+                        ir::Pattern::Variant { variant, .. } => covered.push(variant.clone()),
+                        _ => {}
                     }
                     let t = self.expr(&arm.body, env)?;
                     match &result {
@@ -641,14 +648,21 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                if !exhaustive {
-                    return self.error(
-                        *pos,
-                        format!(
-                            "this `match` has no `_` arm, so a `{}` that matches nothing has no value",
-                            self.name_of(&subject)
-                        ),
-                    );
+
+                // A `match` on an enum is exhaustive when it names every
+                // variant. Any other subject needs a `_`, because the checker
+                // cannot see which values of a `Str` or an `Int` will arrive.
+                if !wildcard {
+                    let covers_all = is_enum && self.covers_every_variant(&subject, &covered);
+                    if !covers_all {
+                        return self.error(
+                            *pos,
+                            format!(
+                                "this `match` has no `_` arm, so a `{}` that matches nothing has no value",
+                                self.name_of(&subject)
+                            ),
+                        );
+                    }
                 }
                 result.unwrap_or(Type::Unit)
             }
@@ -913,7 +927,11 @@ impl<'a> Checker<'a> {
     ) -> Result<bool, TypeError> {
         Ok(match p {
             ir::Pattern::Wildcard => true,
-            ir::Pattern::Binding(_) => true,
+            ir::Pattern::Binding(b) => {
+                // A binding takes the type of what it matched.
+                env.bind_slot(b.slot, subject.clone(), _pos);
+                true
+            }
             ir::Pattern::Literal(c) => const_type(c) == *subject,
             ir::Pattern::Tuple(items) => match subject {
                 Type::Tuple(ts) => {
@@ -957,6 +975,21 @@ impl<'a> Checker<'a> {
                 }
             }
         })
+    }
+
+    /// Whether a set of variant names covers every variant of an enum.
+    fn covers_every_variant(&self, subject: &Type, covered: &[String]) -> bool {
+        let id = match subject {
+            Type::Named(id) => *id,
+            _ => return false,
+        };
+        let decl = self.decls.get(id);
+        if !decl.is_enum || decl.variants.is_empty() {
+            return false;
+        }
+        decl.variants
+            .iter()
+            .all(|v| covered.iter().any(|c| c == &v.name))
     }
 
     /// Whether a value of type `got` may be used where `want` is expected.

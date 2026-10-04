@@ -289,7 +289,7 @@ fn match_on_a_tuple_with_alternatives_in_one_arm() {
 #[test]
 fn a_match_may_bind_the_scrutinee() {
     let out = run(
-        "fn f(n: Int) -> Int { let a = match n { x => x * 2, _ => 0 }; return a; }
+        "fn f(n: Int) -> Int { let a = match n { x => x + x, _ => 0 }; return a; }
          fn main() { println(int_to_string(f(21))); }",
     );
     assert_eq!(out, "42\n");
@@ -504,15 +504,19 @@ fn a_struct_literal_with_the_wrong_field_count_is_rejected() {
 fn a_match_with_no_matching_arm_is_reported() {
     let err =
         fails("fn f(n: Int) -> Int { let a = match n { 1 => 1 }; return a; } fn main() { f(2); }");
-    assert!(err.contains("no `match` arm matched"), "was {:?}", err);
+    // The checker requires a `_` arm on a match over an `Int`, because it
+    // cannot see which values will arrive. This is a static rejection, before
+    // the interpreter would have hit a value that matched nothing.
+    assert!(err.contains("no `_` arm"), "was {:?}", err);
 }
 
 #[test]
 fn a_builtin_called_with_the_wrong_arity_is_rejected() {
     // `println()` takes any number of values, so a builtin that needs one is
-    // the right subject here.
+    // the right subject here. The checker rejects this before the interpreter,
+    // so the message comes from there.
     let err = fails("fn main() { int_to_string(); }");
-    assert!(err.contains("takes 1 argument"), "was {:?}", err);
+    assert!(err.contains("takes 1 value"), "was {:?}", err);
 }
 
 #[test]
