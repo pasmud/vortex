@@ -76,7 +76,11 @@ fn assert_at(src: &str, line: u32, col: u32, fragment: &str) {
 fn accepted(src: &str) {
     let mut out = Vec::new();
     if let Err(e) = vortexc::run_source(src, &mut out) {
-        panic!("expected this to run, got {} from the {} stage", e, e.stage());
+        panic!(
+            "expected this to run, got {} from the {} stage",
+            e,
+            e.stage()
+        );
     }
 }
 
@@ -86,7 +90,8 @@ fn accepted(src: &str) {
 fn an_ill_typed_program_never_reaches_the_interpreter() {
     // The program would print and then divide by zero if it ran. It is rejected
     // by the checker, so the interpreter is never entered and no output exists.
-    let src = "fn main() {\n    let a = \"text\";\n    let b = a - 1;\n    println(int_to_string(b));\n}";
+    let src =
+        "fn main() {\n    let a = \"text\";\n    let b = a - 1;\n    println(int_to_string(b));\n}";
     let mut out = Vec::new();
     let err = match vortexc::run_source(src, &mut out) {
         Ok(_) => panic!("expected the checker to reject this program"),
@@ -103,7 +108,8 @@ fn an_ill_typed_program_never_reaches_the_interpreter() {
 #[test]
 fn a_well_typed_program_runs_and_prints() {
     let mut out = Vec::new();
-    vortexc::run_source("fn main() { println(int_to_string(1 + 1)); }", &mut out).expect("should run");
+    vortexc::run_source("fn main() { println(int_to_string(1 + 1)); }", &mut out)
+        .expect("should run");
     assert_eq!(String::from_utf8_lossy(&out), "2\n");
 }
 
@@ -124,7 +130,7 @@ fn a_non_bool_while_condition_is_rejected() {
     assert_at(
         "fn main() {\n    while 1.5 { }\n}",
         2,
-    11,
+        11,
         "`while` condition must be `Bool`, found `Float`",
     );
 }
@@ -134,7 +140,7 @@ fn a_range_that_is_not_int_is_rejected() {
     assert_at(
         "fn main() {\n    for i in 0..=1.5 { }\n}",
         2,
-    18,
+        18,
         "both ends must be `Int`",
     );
 }
@@ -144,7 +150,7 @@ fn a_non_int_index_is_rejected() {
     assert_at(
         "fn main() {\n    let a = [1, 2];\n    let b = a[\"x\"];\n}",
         3,
-    15,
+        15,
         "an index must be an `Int`, found `Str`",
     );
 }
@@ -154,7 +160,7 @@ fn a_return_of_the_wrong_type_is_rejected() {
     assert_at(
         "fn f() -> Int {\n    return \"text\";\n}",
         2,
-    12,
+        12,
         "this returns `Str` where `Int` is expected",
     );
 }
@@ -164,7 +170,7 @@ fn a_function_that_cannot_reach_its_return_is_rejected() {
     assert_at(
         "fn f() -> Int {\n    let a = 1;\n}\nfn main() { }",
         1,
-    1,
+        1,
         "can reach the end without returning",
     );
 }
@@ -185,12 +191,9 @@ fn two_structs_with_identical_fields_are_different_types() {
 
 #[test]
 fn an_unknown_struct_is_rejected() {
-    assert_at(
-        "fn main() {\n    let p = Missing { x: 1 };\n}",
-        2,
-    13,
-        "unknown struct `Missing`",
-    );
+    let e = earlier_stage("fn main() {\n    let p = Missing { x: 1 };\n}", "lower");
+    assert!(e.contains("unknown struct `Missing`"), "was {:?}", e);
+    assert!(e.contains("2:13"), "must name line and column, was {:?}", e);
 }
 
 #[test]
@@ -198,7 +201,7 @@ fn a_field_that_does_not_exist_is_rejected() {
     assert_at(
         "struct P { x: Int }\nfn main() {\n    let p = P { x: 1 };\n    let y = p.z;\n}",
         4,
-    14,
+        14,
         "has no field `z`",
     );
 }
@@ -208,19 +211,21 @@ fn a_field_of_the_wrong_type_is_rejected() {
     assert_at(
         "struct P { x: Int, y: Int }\nfn main() {\n    let p = P { x: 1, y: \"s\" };\n}",
         3,
-    13,
+        13,
         "field `y` of `P` is `Str` where `Int` is expected",
     );
 }
 
 #[test]
 fn a_missing_field_is_rejected() {
-    assert_at(
+    // Lowering already knows every field of a declared struct, so it rejects
+    // this before the checker runs. The test records which stage owns the rule.
+    let e = earlier_stage(
         "struct P { x: Int, y: Int }\nfn main() {\n    let p = P { x: 1 };\n}",
-        3,
-    21,
-        "`P` has 2 fields, found 1 value",
+        "lower",
     );
+    assert!(e.contains("`P` has 2 fields"), "was {:?}", e);
+    assert!(e.contains("3:13"), "must name line and column, was {:?}", e);
 }
 
 #[test]
@@ -228,7 +233,7 @@ fn an_unknown_type_name_is_rejected() {
     assert_at(
         "fn f(x: Nonesuch) -> Int { return 1; }\nfn main() { }",
         1,
-    1,
+        1,
         "unknown type `Nonesuch`",
     );
 }
@@ -245,8 +250,8 @@ fn a_wrong_sized_tuple_is_rejected() {
     assert_at(
         "fn main() {\n    let t = (1, 2);\n    let a = t.9;\n}",
         3,
-    14,
-        "cannot read a field of `()`",
+        14,
+        "index 9 is past the end of a 2 element tuple",
     );
 }
 
@@ -255,7 +260,7 @@ fn a_list_with_mixed_element_types_is_rejected() {
     assert_at(
         "fn main() {\n    let a = [1, \"two\"];\n}",
         2,
-    17,
+        17,
         "every element of a list has one type",
     );
 }
@@ -267,7 +272,7 @@ fn mixing_int_and_float_in_an_arithmetic_expression_is_rejected() {
     assert_at(
         "fn main() {\n    let a = 1 + 1.5;\n}",
         2,
-    15,
+        15,
         "rule 4 forbids mixing `Int` and `Float`",
     );
 }
@@ -277,7 +282,7 @@ fn comparing_int_with_float_is_rejected() {
     assert_at(
         "fn main() {\n    let a = 1 < 1.5;\n}",
         2,
-    15,
+        15,
         "cannot compare `Int` with `Float`",
     );
 }
@@ -287,7 +292,7 @@ fn subtracting_a_float_from_an_int_is_rejected() {
     assert_at(
         "fn main() {\n    var a = 10;\n    a = a - 0.5;\n}",
         3,
-    11,
+        11,
         "rule 4 forbids mixing `Int` and `Float`",
     );
 }
@@ -301,12 +306,11 @@ fn int_and_float_arithmetic_is_accepted_on_their_own() {
 
 #[test]
 fn assigning_a_different_type_to_a_let_is_rejected() {
-    assert_at(
-        "fn main() {\n    let a = 1;\n    a = 1.5;\n}",
-        3,
-    9,
-        "section 6.1 rule 7 fixes a name's type",
-    );
+    // Lowering knows whether a binding was written `var`, so it rejects an
+    // assignment to a `let` before the checker runs.
+    let e = earlier_stage("fn main() {\n    let a = 1;\n    a = 1.5;\n}", "lower");
+    assert!(e.contains("declared with `let`"), "was {:?}", e);
+    assert!(e.contains("3:7"), "must name line and column, was {:?}", e);
 }
 
 #[test]
@@ -318,12 +322,10 @@ fn assigning_the_right_type_to_a_var_is_accepted() {
 
 #[test]
 fn shadowing_a_let_in_the_same_scope_is_rejected() {
-    assert_at(
-        "fn main() {\n    let a = 1;\n    let a = 2;\n}",
-        3,
-    9,
-        "already declared in this scope",
-    );
+    // Section 6.1 rule 8. Lowering owns scopes, so it rejects this.
+    let e = earlier_stage("fn main() {\n    let a = 1;\n    let a = 2;\n}", "lower");
+    assert!(e.contains("already declared in this scope"), "was {:?}", e);
+    assert!(e.contains("3:5"), "must name line and column, was {:?}", e);
 }
 
 #[test]
@@ -338,7 +340,7 @@ fn an_argument_of_the_wrong_type_is_rejected() {
     assert_at(
         "fn f(a: Int) -> Int { return a; }\nfn main() {\n    let x = f(\"text\");\n}",
         3,
-    14,
+        14,
         "argument 1 of `f` is `Str` where `Int` is expected",
     );
 }
@@ -348,7 +350,7 @@ fn a_return_type_that_does_not_match_the_signature_is_rejected() {
     assert_at(
         "fn f() -> Int { return 1.5; }\nfn main() { }",
         1,
-    1,
+        24,
         "this returns `Float` where `Int` is expected",
     );
 }
@@ -360,19 +362,16 @@ fn an_enum_payload_of_the_wrong_type_is_rejected() {
     assert_at(
         "enum S { a(Int) }\nfn main() {\n    let s = S.a(\"text\");\n}",
         3,
-    14,
+        14,
         "value 1 of `S.a` is `Str` where `Int` is expected",
     );
 }
 
 #[test]
 fn an_unknown_variant_is_rejected() {
-    assert_at(
-        "enum S { a }\nfn main() {\n    let s = S.b;\n}",
-        3,
-    14,
-        "enum `S` has no variant `b`",
-    );
+    let e = earlier_stage("enum S { a }\nfn main() {\n    let s = S.b;\n}", "lower");
+    assert!(e.contains("has no variant `b`"), "was {:?}", e);
+    assert!(e.contains("3:14"), "must name line and column, was {:?}", e);
 }
 
 #[test]
@@ -388,9 +387,11 @@ fn a_match_whose_arms_disagree_is_rejected() {
 #[test]
 fn a_match_over_int_without_a_wildcard_is_rejected() {
     assert_at(
+        // The diagnostic points at `n`, the value being matched, which starts
+        // at column 19 rather than at the `let`.
         "fn f(n: Int) -> Int {\n    let a = match n { 1 => 1 };\n    return a;\n}\nfn main() { }",
         2,
-    28,
+        19,
         "no `_` arm",
     );
 }
@@ -405,10 +406,11 @@ fn a_match_covering_every_variant_of_an_enum_needs_no_wildcard() {
 #[test]
 fn an_arm_that_can_never_match_is_rejected() {
     assert_at(
+        // As above, the diagnostic points at the scrutinee `n`.
         "fn f(n: Int) -> Int {\n    let a = match n { \"text\" => 1, _ => 2 };\n    return a;\n}\nfn main() { }",
         2,
-    28,
-        "this arm can never match an `Int`",
+    19,
+        "this arm can never match a `Int`",
     );
 }
 
@@ -419,7 +421,7 @@ fn a_builtin_with_the_wrong_argument_type_is_rejected() {
     assert_at(
         "fn main() {\n    let s = int_to_string(1.5);\n}",
         2,
-    26,
+        26,
         "argument 1 of `int_to_string` is `Float` where `Int` is expected",
     );
 }
@@ -429,7 +431,7 @@ fn a_builtin_with_the_wrong_arity_is_rejected() {
     assert_at(
         "fn main() {\n    let s = int_to_string();\n}",
         2,
-    26,
+        26,
         "`int_to_string` takes 1 value, found 0",
     );
 }

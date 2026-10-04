@@ -354,7 +354,11 @@ impl<'a> Checker<'a> {
                 if s != Type::Int || e != Type::Int {
                     // The diagnostic belongs on whichever end is wrong, since
                     // that is the line a reader has to change.
-                    let at = if s != Type::Int { start.pos() } else { end.pos() };
+                    let at = if s != Type::Int {
+                        start.pos()
+                    } else {
+                        end.pos()
+                    };
                     return self.error(
                         at,
                         format!(
@@ -487,7 +491,7 @@ impl<'a> Checker<'a> {
                 }
             }
 
-            ir::Expr::Index { base, index, pos } => {
+            ir::Expr::Index { base, index, pos: _ } => {
                 let b = self.expr(base, env)?;
                 let i = self.expr(index, env)?;
                 if i != Type::Int {
@@ -643,7 +647,7 @@ impl<'a> Checker<'a> {
                         // An arm whose pattern cannot match the subject is dead
                         // code, and is worth naming rather than ignoring.
                         return self.error(
-                            *pos,
+                            scrutinee.pos(),
                             format!("this arm can never match a `{}`", self.name_of(&subject)),
                         );
                     }
@@ -677,7 +681,7 @@ impl<'a> Checker<'a> {
                     let covers_all = is_enum && self.covers_every_variant(&subject, &covered);
                     if !covers_all {
                         return self.error(
-                            *pos,
+                            scrutinee.pos(),
                             format!(
                                 "this `match` has no `_` arm, so a `{}` that matches nothing has no value",
                                 self.name_of(&subject)

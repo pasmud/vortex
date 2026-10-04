@@ -376,10 +376,7 @@ impl Lowerer {
             // A bare name is a variable read, or a call with no arguments.
             ast::ExprKind::Ident(name) => match st.lookup(name) {
                 Some(Binding::Mutable(slot)) | Some(Binding::Immutable(slot)) => {
-                    ir::Expr::Load {
-                        slot,
-                        pos,
-                    }
+                    ir::Expr::Load { slot, pos }
                 }
                 None => {
                     if self.functions.contains_key(name) {
