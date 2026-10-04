@@ -371,13 +371,21 @@ impl<'a> Vm<'a> {
                 }
                 Op::LoopEnter => {
                     frame.loops += 1;
-                    // The stack depth the loop body starts from, so EndLoop can
-                    // restore it however the body was left.
-                    frame.loop_bases.push(frame.stack.len());
+                    // The stack depth the body starts from. A back jump does
+                    // not go through LoopEnter, so this runs once per entry
+                    // rather than once per iteration. It used to run per
+                    // iteration, which grew the stack without bound.
+                    // Recorded before the condition pushes anything, so this is
+                    // the depth a loop body starts from.
+                    if frame.loop_bases.len() < frame.loops {
+                        frame.loop_bases.push(frame.stack.len());
+                    }
                 }
                 Op::LoopExit => {
                     frame.loops = frame.loops.saturating_sub(1);
-                    frame.loop_bases.pop();
+                    if frame.loop_bases.len() > frame.loops {
+                        frame.loop_bases.pop();
+                    }
                 }
                 Op::EndLoop { on_break } => {
                     // A continue lands here and the flag decides whether the
@@ -387,6 +395,13 @@ impl<'a> Vm<'a> {
                     // whether the loop stops or repeats, and is cleared either
                     // way, which is what makes a nested loop work: the inner
                     // loop consumes the flag before the outer one sees it.
+                    // EndLoop is the loop boundary, so the loop is left here.
+                    // A break already unwound itself on the way out, because it
+                    // jumps rather than falling through to this instruction.
+                    if frame.flow != Flow::Break {
+                        frame.loops = frame.loops.saturating_sub(1);
+                        frame.loop_bases.pop();
+                    }
                     match frame.flow {
                         Flow::Break => {
                             frame.flow = Flow::Normal;

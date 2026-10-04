@@ -386,9 +386,12 @@ impl FnCompiler {
 
             ir::Stmt::While { cond, body, pos } => {
                 let top = self.here();
+                // LoopEnter sits before the condition so it runs once when the
+                // loop is entered. After the condition it ran on every
+                // iteration, and the VM counted the loop deeper each pass.
+                self.emit(Op::LoopEnter, *pos);
                 self.expr(cond)?;
                 let exit = self.emit_at(Op::JumpIfFalse(0), *pos);
-                self.emit(Op::LoopEnter, *pos);
                 self.loops += 1;
                 self.exits.push(Vec::new());
                 self.block(body)?;
@@ -434,12 +437,14 @@ impl FnCompiler {
                 self.emit(Op::Store(limit + 1), *pos);
 
                 let top = self.here();
+                // LoopEnter comes before the condition so it runs once when the
+                // loop is entered rather than on every iteration.
+                self.emit(Op::LoopEnter, *pos);
                 self.emit(Op::Load(*var_slot), *pos);
                 self.emit(Op::Load(limit + 1), *pos);
                 self.emit(Op::Binary(ast::BinOp::Lt), *pos);
                 let exit = self.emit_at(Op::JumpIfFalse(0), *pos);
 
-                self.emit(Op::LoopEnter, *pos);
                 self.loops += 1;
                 self.exits.push(Vec::new());
                 self.block(body)?;
@@ -481,6 +486,7 @@ impl FnCompiler {
                 self.emit(Op::Store(idx), *pos);
 
                 let top = self.here();
+                self.emit(Op::LoopEnter, *pos);
                 // The condition is index < length of the sequence. It compared
                 // the index with itself before, which is never true, so the loop
                 // either never ran or never stopped.
@@ -490,7 +496,6 @@ impl FnCompiler {
                 self.emit(Op::Binary(ast::BinOp::Lt), *pos);
                 let exit = self.emit_at(Op::JumpIfFalse(0), *pos);
 
-                self.emit(Op::LoopEnter, *pos);
                 self.emit(Op::Load(seq), *pos);
                 self.emit(Op::Load(idx), *pos);
                 self.emit(Op::Index, *pos);
