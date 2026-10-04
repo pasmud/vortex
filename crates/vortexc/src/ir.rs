@@ -185,9 +185,30 @@ pub enum Expr {
         tuple: bool,
         pos: Pos,
     },
+    /// `[value; count]`, a list of `count` copies of `value`.
+    ///
+    /// `SPEC.md` section 8.2 recorded a list of a computed length as missing in
+    /// v0.1. This is the form that adds it.
+    Repeat {
+        value: Box<Expr>,
+        count: Box<Expr>,
+        pos: Pos,
+    },
     Index {
         base: Box<Expr>,
         index: Box<Expr>,
+        pos: Pos,
+    },
+    /// Store into a list element, as `a[i] = v`.
+    ///
+    /// The list is named by the frame slot that holds it rather than by an
+    /// expression, because the executor has to write the mutated list back into
+    /// that slot. Mutating a value read out of a slot would otherwise change a
+    /// copy and lose the store.
+    IndexStore {
+        slot: Slot,
+        index: Box<Expr>,
+        value: Box<Expr>,
         pos: Pos,
     },
     Field {
@@ -216,7 +237,9 @@ impl Expr {
             | Expr::If { pos, .. }
             | Expr::Match { pos, .. }
             | Expr::List { pos, .. }
+            | Expr::Repeat { pos, .. }
             | Expr::Index { pos, .. }
+            | Expr::IndexStore { pos, .. }
             | Expr::Field { pos, .. }
             | Expr::Try { pos, .. } => *pos,
             Expr::BlockValue(b) => b.pos,

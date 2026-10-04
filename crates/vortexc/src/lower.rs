@@ -451,7 +451,45 @@ impl Lowerer {
                 pos,
             },
 
-            ast::ExprKind::Assign { name, value } => {
+            ast::ExprKind::Assign { name, index, value } => {
+                // `a[i] = v` stores into a list element, which the interpreter
+                // already knows how to do. The name it belongs to still has to
+                // be mutable, exactly as a plain assignment does.
+                if let Some((base_expr, index_expr)) = index {
+                    // The list is held in a slot, so the executor can write the
+                    // mutated list back after changing one element. The name
+                    // itself must be a `var`, since this changes it.
+                    let base_slot = match st.lookup(name) {
+                        Some(Binding::Mutable(slot)) => slot,
+                        Some(Binding::Immutable(_)) => {
+                            return Err(LowerError {
+                                message: format!(
+                                    "cannot assign into `{}` because it was declared with `let`",
+                                    name
+                                ),
+                                pos,
+                            })
+                        }
+                        None => {
+                            return Err(LowerError {
+                                message: format!("undefined name `{}`", name),
+                                pos,
+                            })
+                        }
+                    };
+                    // The base expression is evaluated for its own errors only;
+                    // it is a name, so the slot is what identifies the list.
+                    let _ = self.expr(base_expr, st)?;
+                    let idx = self.expr(index_expr, st)?;
+                    let v = self.expr(value, st)?;
+                    return Ok(ir::Expr::IndexStore {
+                        slot: base_slot,
+                        index: Box::new(idx),
+                        value: Box::new(v),
+                        pos,
+                    });
+                }
+
                 let slot = match st.lookup(name) {
                     Some(Binding::Mutable(slot)) => slot,
                     Some(Binding::Immutable(_)) => {
@@ -648,6 +686,18 @@ impl Lowerer {
                     },
                     args: lowered,
                     arg_slots: Vec::new(),
+                    pos,
+                }
+            }
+
+            // `[value; count]` builds a list of a length only known at run
+            // time, which is what the benchmark workload needs.
+            ast::ExprKind::Repeat { value, count } => {
+                let v = self.expr(value, st)?;
+                let c = self.expr(count, st)?;
+                ir::Expr::Repeat {
+                    value: Box::new(v),
+                    count: Box::new(c),
                     pos,
                 }
             }

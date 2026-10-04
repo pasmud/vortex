@@ -375,6 +375,80 @@ impl<'a> Vm<'a> {
                     Value::Array(values)
                 })
             }
+            // `[value; count]` builds a list whose length is known only at run
+            // time, which is what the benchmark workload needs.
+            ir::Expr::Repeat { value, count, pos } => {
+                let v = self.eval(value, frame)?.value();
+                let n = self.eval(count, frame)?.value();
+                let n = match &n {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(RuntimeError::BadOperands {
+                            op: "a list repeat count".to_string(),
+                            lhs: "an Int".to_string(),
+                            rhs: other.type_name().to_string(),
+                            pos: *pos,
+                        })
+                    }
+                };
+                if n < 0 {
+                    return Err(RuntimeError::BadIndex {
+                        pos: *pos,
+                        detail: format!("cannot build a list of {} elements", n),
+                    });
+                }
+                Eval::Value(Value::Array(vec![v; n as usize]))
+            }
+
+            // `a[i] = v` stores into a list element, then writes the changed
+            // list back into the slot that holds it. Without the write back the
+            // store would only change a copy.
+            ir::Expr::IndexStore {
+                slot,
+                index,
+                value,
+                pos,
+            } => {
+                let mut list = frame.get(*slot);
+                let at = self.eval(index, frame)?.value();
+                let v = self.eval(value, frame)?.value();
+                let at = match &at {
+                    Value::Int(n) => *n,
+                    other => {
+                        return Err(RuntimeError::BadIndex {
+                            pos: *pos,
+                            detail: format!("an index must be an Int, found {}", other.type_name()),
+                        })
+                    }
+                };
+                if at < 0 {
+                    return Err(RuntimeError::BadIndex {
+                        pos: *pos,
+                        detail: format!("index {} is negative", at),
+                    });
+                }
+                let at = at as usize;
+                let items = match &mut list {
+                    Value::Array(items) => items,
+                    other => {
+                        return Err(RuntimeError::BadIndex {
+                            pos: *pos,
+                            detail: format!("{} cannot be indexed", other.type_name()),
+                        })
+                    }
+                };
+                if at >= items.len() {
+                    return Err(RuntimeError::BadIndex {
+                        pos: *pos,
+                        detail: format!("index {} is past the end of {} values", at, items.len()),
+                    });
+                }
+                items[at] = v.clone();
+                // Write the changed list back, or the store only touched a copy.
+                frame.set(*slot, list);
+                Eval::Value(v)
+            }
+
             ir::Expr::Index { base, index, pos } => {
                 let b = self.eval(base, frame)?.value();
                 let i = self.eval(index, frame)?.value();

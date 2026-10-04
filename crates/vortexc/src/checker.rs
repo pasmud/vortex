@@ -491,6 +491,59 @@ impl<'a> Checker<'a> {
                 }
             }
 
+            // `[value; count]` is a list of the repeated value's type. The count
+            // may be any Int, and every element is one type.
+            ir::Expr::Repeat { value, count, .. } => {
+                let v = self.expr(value, env)?;
+                let c = self.expr(count, env)?;
+                if c != Type::Int {
+                    return self.error(
+                        count.pos(),
+                        format!(
+                            "a list repeat count must be an `Int`, found `{}`",
+                            self.name_of(&c)
+                        ),
+                    );
+                }
+                Type::Array(Box::new(v))
+            }
+
+            // `a[i] = v` stores into a list element, so the value must match
+            // the element type.
+            ir::Expr::IndexStore {
+                slot, index, value, ..
+            } => {
+                let b = env.slot_type(*slot).unwrap_or(Type::Unit);
+                let i = self.expr(index, env)?;
+                if i != Type::Int {
+                    return self.error(
+                        index.pos(),
+                        format!("an index must be an `Int`, found `{}`", self.name_of(&i)),
+                    );
+                }
+                let want = match &b {
+                    Type::Array(t) => (**t).clone(),
+                    other => {
+                        return self.error(
+                            value.pos(),
+                            format!("`{}` cannot be indexed", self.name_of(other)),
+                        )
+                    }
+                };
+                let got = self.expr(value, env)?;
+                if !self.compatible(&want, &got) {
+                    return self.error(
+                        value.pos(),
+                        format!(
+                            "this list holds `{}` and cannot store a `{}`",
+                            self.name_of(&want),
+                            self.name_of(&got)
+                        ),
+                    );
+                }
+                got
+            }
+
             ir::Expr::Index {
                 base,
                 index,
