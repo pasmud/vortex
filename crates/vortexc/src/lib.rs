@@ -5,6 +5,7 @@
 //! it, which is what `SPEC.md` section 6.1 rule 1 requires.
 
 pub mod ast;
+pub mod bytecode;
 pub mod checker;
 pub mod interp;
 pub mod ir;
