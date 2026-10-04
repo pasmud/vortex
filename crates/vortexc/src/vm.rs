@@ -99,6 +99,8 @@ struct Frame {
     /// How many values the next `BuildList` gathers, carried by the `ListLen`
     /// the compiler emitted before it.
     pending_len: usize,
+    /// The stack depth each open loop body started from.
+    loop_bases: Vec<usize>,
 }
 
 impl Frame {
@@ -110,6 +112,7 @@ impl Frame {
             flow: Flow::Normal,
             loops: 0,
             pending_len: 0,
+            loop_bases: Vec::new(),
         }
     }
 
@@ -357,8 +360,16 @@ impl<'a> Vm<'a> {
                     };
                     frame.push(Value::Int(n as i64));
                 }
-                Op::LoopEnter => frame.loops += 1,
-                Op::LoopExit => frame.loops = frame.loops.saturating_sub(1),
+                Op::LoopEnter => {
+                    frame.loops += 1;
+                    // The stack depth the loop body starts from, so EndLoop can
+                    // restore it however the body was left.
+                    frame.loop_bases.push(frame.stack.len());
+                }
+                Op::LoopExit => {
+                    frame.loops = frame.loops.saturating_sub(1);
+                    frame.loop_bases.pop();
+                }
                 Op::EndLoop { on_break } => {
                     // A loop body ends here. A flag set inside it decides
                     // whether the loop stops or repeats, and is cleared either
@@ -372,8 +383,13 @@ impl<'a> Vm<'a> {
                         Flow::Continue => frame.flow = Flow::Normal,
                         Flow::Normal => {}
                     }
-                    // The body leaves its value behind, so it is dropped here.
-                    frame.pop();
+                    // Restore the stack depth the body started from. The body
+                    // leaves a different number of values depending on whether
+                    // it fell through, continued or broke, so the depth is
+                    // taken from the loop entry rather than guessed.
+                    if let Some(base) = frame.loop_bases.last().copied() {
+                        frame.stack.truncate(base);
+                    }
                 }
             }
         }
