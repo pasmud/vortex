@@ -1,19 +1,59 @@
-// Comments, escapes and literals. Stage 1 only lexes this file; stage 2 runs it.
+// Strings, escapes and character literals. It exercises string escapes, `Char`,
+// indexing a string, and the string builtins.
 //
-// A line comment, a block comment and a nested block comment.
+// Escapes are decoded during lexing, so a literal carries its value.
 
-/* This block comment contains // a line comment inside it.
-   It also nests: /* an inner comment */ and the outer one continues. */
-
-fn describe() -> Str {
+fn main() {
     let tab = "\t";
     let newline = "\n";
     let quote = "\"";
     let backslash = "\\";
     let heart = "\u{2764}";
-    let bell = "\x07";
-    let pi = 3.14159;
-    let masked = 0b1010_1010 & 0xFF;
-    let joined = "Fizz" + "Buzz";
-    return tab + newline + quote + backslash + heart + bell;
+    // `\xNN` decodes one byte, so `"\x41"` is the character `A` rather than the
+    // integer 65. See SPEC.md section 5.6.
+    let letter = "\x41";
+
+    // `print` writes without a newline, `println` adds one.
+    print("tab=[");
+    print(tab);
+    print("] newline=[");
+    print(newline);
+    println("]");
+
+    println("quote=" + quote);
+    println("backslash=" + backslash);
+    println("heart=" + heart);
+    println("byte=" + letter);
+
+    // A string is a sequence of characters, so indexing it returns the
+    // character at that position, and the result is a `Char` rather than an
+    // `Int`. `SPEC.md` section 6.1 rule 4 forbids mixing the two without a
+    // cast, and a cast is stage 3.
+    let word = "Vortex";
+    print(word[0]);
+    print(word[1]);
+    println("");
+
+    // Indexing past the end is a run time error naming the index and the
+    // length. See `crates/vortexc/tests/interp.rs`.
+
+    let c = 'x';
+    let nl = '\n';
+    let emoji = '\u{1F600}';
+    print("chars: ");
+    print(c);
+    print(nl);
+    print(emoji);
+    println("");
+
+    // Converting between text and numbers.
+    println(int_to_string(string_to_int("  41  ") + 1));
+    println(int_to_string(255));
+
+    // `float_to_string` uses six decimal places, which is the same format the
+    // benchmark checksum uses.
+    println(float_to_string(1.0 / 3.0));
+    println(float_to_string(2.5));
+
+    return 0;
 }

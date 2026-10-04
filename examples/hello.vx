@@ -1,8 +1,10 @@
-// A first Vortex program. Stage 1 only lexes this file; stage 2 runs it.
+// A first Vortex program. It exercises functions, parameters, `var`, `let`,
+// arithmetic, comparison, `while` and `return`.
 //
-// The gcd function from SPEC.md section 8.
+// The parameter `b` is written `var` so it can be reassigned. See SPEC.md
+// section 8: a parameter is immutable unless it is declared `var`.
 
-fn gcd(a: Int, b: Int) -> Int {
+fn gcd(var a: Int, var b: Int) -> Int {
     while b != 0 {
         let t = b;
         b = a % b;
@@ -11,9 +13,16 @@ fn gcd(a: Int, b: Int) -> Int {
     return a;
 }
 
-// The `let` binding below is immutable, and the function arguments are mutable.
-fn main() -> Int {
-    var a = 1071;
-    var b = 462;
-    return gcd(a, b);
+fn fib(n: Int) -> Int {
+    // Recursion needs no `mut`. See SPEC.md section 6.1 rule 9.
+    if n < 2 {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+fn main() {
+    println(int_to_string(gcd(1071, 462)));
+    println(int_to_string(fib(20)));
+    return 0;
 }

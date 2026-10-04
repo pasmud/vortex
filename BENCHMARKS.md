@@ -1,12 +1,21 @@
 # Vortex benchmarks
 
-## NO RESULTS YET
+## NO VORTEX RESULTS YET
 
-There are no benchmark results in this repository.
+There are no Vortex benchmark results in this repository, and this section says
+why rather than leaving it blank.
 
-Stage 1 has a lexer only. There is no Vortex program that can run, so there is
-nothing to measure and nothing to compare. Every table cell for Vortex stays
-empty until an evaluator exists in stage 2.
+Stage 2 has a tree interpreter that runs the programs in `examples/`, but it
+cannot run the benchmark workload. The C and Rust baselines both implement a
+sieve of Eratosthenes over a byte array, and Vortex v0.1 has no index
+assignment, so `a[i] = v` is a parse error, and no list of a computed length, so
+the 2,000,001 element flag array cannot be built at all. `bench/vortex/README.md`
+explains this in full and lists what stage 3 has to do about it.
+
+The alternative would have been to write a different, weaker algorithm in all
+three languages and put those numbers in one table. That would have produced
+three real measurements that did not measure the same thing, and the table would
+have read as a comparison it could not support. The row stays empty instead.
 
 No number in this file is estimated, projected or carried over from another
 project. When results are added, they come from an actual run of `bench/run.sh`
@@ -23,9 +32,8 @@ does not write to this file.
 
 ## Machine specification
 
-Recorded from the machine the harness was first run on, so that the first
-results have a machine to be measured against. Re-run `bench/run.sh` and update
-this section whenever results are added on a different machine.
+Recorded from the machine the harness was first run on. Re-run `bench/run.sh`
+and update this section whenever results are added on a different machine.
 
 | Property | Value |
 | --- | --- |
@@ -46,9 +54,8 @@ a small floating point matrix workload.
 
 Each implementation prints a checksum. The checksums of the two baselines
 agree, which is how the harness tells that the implementations have not drifted
-apart. Stage 2 adds `bench/vortex/` implementing the same algorithm, and its
-checksum must match the same value. If it does not, the comparison is invalid
-and is fixed before any timing is recorded.
+apart. A Vortex implementation must print the same value. If it does not, the
+comparison is invalid and is fixed before any timing is recorded.
 
 ## Why this workload
 
@@ -63,8 +70,9 @@ than one workload before any conclusion is drawn about relative speed.
     bench/run.sh --repeats 5  # five runs each, fastest is reported
 
 The harness prints a table with one row per language and reports the reason a
-row has no time instead of inventing one. Today that table has a C row, a Rust
-row and a Vortex row reading `not implemented`.
+row has no time instead of inventing one. Today that table has a C row and a
+Rust row carrying the same checksum, and a Vortex row reading `n/a` with the
+reason.
 
 One run per workload is noisy. Any result that goes into this file should come
 from at least five repeats.

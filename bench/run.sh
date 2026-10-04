@@ -4,10 +4,9 @@
 # Builds the same workload in every language that has an implementation, runs
 # each one, and prints a comparison table.
 #
-# The Vortex row is present from stage 1 and reads "not implemented" until a
-# stage provides an evaluator. This script never prints a number for an
-# implementation that did not run, and never estimates one. A row is filled in
-# only by a binary that actually executed.
+# A row is filled in only by a binary that actually executed. This script never
+# prints a number for an implementation that did not run, and never estimates
+# one.
 #
 # Usage:
 #   bench/run.sh              run every implemented workload once
@@ -67,7 +66,10 @@ else
     RUST_VERSION="not available"
 fi
 
-VORTEX_STATUS="not implemented: stage 1 has no evaluator, see ROADMAP.md stage 2"
+# The Vortex row stays empty until a Vortex program can express the same
+# workload. See bench/vortex/README.md for the two language gaps that stop it
+# today: there is no index assignment and no list of a computed length.
+VORTEX_STATUS="no Vortex workload: the baseline sieve needs index assignment and a list of a computed length, neither of which v0.1 has. See bench/vortex/README.md"
 
 # --- Run -----------------------------------------------------------------
 

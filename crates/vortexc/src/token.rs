@@ -44,7 +44,7 @@ pub enum Tok {
     /// A single `&`. Vortex v0.1 has no references, so this token exists only
     /// to give a precise diagnostic when someone writes one.
     Amp,
-    /// A single `|`, likewise.
+    /// A single `|`, used to separate patterns in one `match` arm.
     Pipe,
     Bang,
     Arrow,

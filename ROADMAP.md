@@ -12,9 +12,9 @@ Test command for every stage:
 
     cargo test --workspace
 
-## Stage 1, active: foundation
+## Stage 1, complete: foundation
 
-Specification, lexer, tests, benchmark skeleton, CI.
+Specification, lexer, tests, benchmark skeleton, CI. Merged in pull request #2.
 
 Acceptance criteria:
 
@@ -34,25 +34,55 @@ Acceptance criteria:
       requests.
 - [x] The example programs under `examples/` are covered by a test.
 
-## Stage 2: parser, AST and a tree interpreter
+## Stage 2, active: parser, AST and a tree interpreter
 
 Scope: parse every program in `examples/` into an AST, and execute them in a
 tree interpreter.
 
 Acceptance criteria:
 
-- [ ] `src/parser/` parses every file in `examples/` without error.
-- [ ] Every `examples/` program runs and prints a line that a test compares to
+- [x] The parser parses every file in `examples/` without error.
+- [x] Every `examples/` program runs and prints a line that a test compares to
       an expected value. The expectation lives in the test, not in the example.
-- [ ] Errors from the parser name line, column and what was expected, in the
-      same style as stage 1.
-- [ ] The tree interpreter supports `fn`, `let`, `var`, `struct`, `enum`,
+      `crates/vortexc/tests/interp.rs` holds them.
+- [x] Errors from the parser name line, column and what was expected, in the
+      same style as stage 1. `crates/vortexc/tests/parser.rs` asserts real
+      positions, including one case where a column counts characters rather
+      than bytes.
+- [x] The tree interpreter supports `fn`, `let`, `var`, `struct`, `enum`,
       `if`/`else`, `while`, `for`, `match`, `break`, `continue` and `return`.
-- [ ] `cargo test --workspace` passes, with the interpreter tests counted
-      separately from the lexer tests.
-- [ ] `bench/run.sh` gains a Vortex row that runs a real algorithm, even if the
-      result is a baseline number recorded with that label. No estimated
-      numbers.
+      Both `for` forms work: `for x in a..=b` counts and `for x in e` walks a
+      list, a tuple or a string.
+- [x] `cargo test --workspace` passes, with the interpreter tests counted
+      separately from the lexer tests. 144 passing: 6 unit, 46 lexer,
+      41 parser, 51 interpreter.
+- [x] The AST is lowered once, as `SPEC.md` section 10.1 asks, so stage 4 adds a
+      consumer rather than rewriting the frontend. `crates/vortexc/src/ir.rs`
+      holds the lowered form and `crates/vortexc/src/lower.rs` the pass.
+- [ ] `bench/run.sh` gains a Vortex row that runs a real algorithm. **Not met,
+      and the reason is recorded rather than worked around.** The C and Rust
+      baselines implement a sieve over a byte array. Vortex v0.1 cannot write
+      it: there is no index assignment, so `a[i] = v` is a parse error, and
+      there is no list of a computed length, so the flag array cannot be
+      allocated. Both are listed in `SPEC.md` section 8.2 and explained in
+      `bench/vortex/README.md`. The row reads `n/a` and says why, and no Vortex
+      time is recorded or estimated. Adding index assignment and a list
+      construction form to the language is a change to `SPEC.md`, so it is left
+      to stage 3 rather than invented here.
+
+### Two language gaps stage 2 found
+
+Both are recorded rather than quietly fixed, because each is a change to the
+language and not to the implementation.
+
+1. **No index assignment.** `a[i] = v` does not parse. The interpreter can
+   already evaluate an index read, so the work is a parser and lowering change
+   plus type rules in stage 3.
+2. **No list of a computed length.** A list literal lists its elements. There is
+   no `[0; n]` form, so a list sized at run time cannot be built.
+
+Stage 3 should close both, and should then add `bench/vortex/sieve.vx` and check
+its checksum against the baselines before recording any time.
 
 ## Stage 3: types and diagnostics
 
