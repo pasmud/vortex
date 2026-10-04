@@ -476,3 +476,59 @@ fn a_struct_field_cannot_hold_another_structs_type() {
         "field `a` of `Holder` is `B` where `A` is expected",
     );
 }
+
+// ---------------------------------------------------------------- as casts
+
+#[test]
+fn an_int_can_be_cast_to_a_float() {
+    accepted("fn f(x: Float) -> Float { return x; } fn main() { f(7 as Float); }");
+}
+
+#[test]
+fn a_float_can_be_cast_to_an_int() {
+    accepted("fn main() { let n = 2.9 as Int; }");
+}
+
+#[test]
+fn a_char_and_an_int_cast_to_each_other() {
+    accepted("fn main() { let n = 'A' as Int; let c = 65 as Char; }");
+}
+
+#[test]
+fn casting_between_two_identical_types_is_allowed() {
+    accepted("fn main() { let n = 1 as Int; }");
+}
+
+#[test]
+fn casting_a_string_to_an_int_is_rejected() {
+    assert_at(
+        "fn main() {\n    let n = \"text\" as Int;\n}",
+        2,
+        20,
+        "cannot cast `Str` to `Int`",
+    );
+}
+
+#[test]
+fn casting_a_char_directly_to_a_float_is_rejected() {
+    // Only Int to Float and Char to Int are legal, not Char to Float, because
+    // there would be no reason to prefer it over writing two casts.
+    assert_at(
+        // The diagnostic points at `as`, which starts at column 57.
+        "fn f(x: Float) -> Float { return x; } fn main() { f('A' as Float); }",
+        1,
+        57,
+        "cannot cast `Char` to `Float`",
+    );
+}
+
+#[test]
+fn a_cast_reaches_the_interpreter_with_the_right_type() {
+    let mut out = Vec::new();
+    vortexc::run_source(
+        "fn main() { println(float_to_string(7 as Float)); }",
+        &mut out,
+    )
+    .expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "7.000000\n");
+}

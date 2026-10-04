@@ -659,6 +659,16 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            // `e as T` is a cast. Section 6.1 rule 4 requires it to be written
+            // out, since there is no implicit conversion between Int and Float.
+            if self.at_keyword("as") {
+                let pos = self.pos();
+                self.advance();
+                let ty = self.type_expr()?;
+                e = Expr::new(pos, ExprKind::Cast(Box::new(e), ty));
+                continue;
+            }
+
             break;
         }
         Ok(e)

@@ -185,6 +185,13 @@ pub enum Expr {
         tuple: bool,
         pos: Pos,
     },
+    /// `e as T`, an explicit conversion. `to` is the source level type, so an
+    /// executor can decide the conversion without a type table.
+    Cast {
+        value: Box<Expr>,
+        to: ast::TypeExpr,
+        pos: Pos,
+    },
     /// `[value; count]`, a list of `count` copies of `value`.
     ///
     /// `SPEC.md` section 8.2 recorded a list of a computed length as missing in
@@ -238,6 +245,7 @@ impl Expr {
             | Expr::Match { pos, .. }
             | Expr::List { pos, .. }
             | Expr::Repeat { pos, .. }
+            | Expr::Cast { pos, .. }
             | Expr::Index { pos, .. }
             | Expr::IndexStore { pos, .. }
             | Expr::Field { pos, .. }
