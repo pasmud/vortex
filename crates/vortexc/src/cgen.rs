@@ -92,7 +92,13 @@ pub fn emit_function(f: &Spanned<ast::FnDecl>) -> Result<String, Unsupported> {
     };
 
     let mut out = String::new();
-    let _ = writeln!(out, "{} {}({}) {{", ret, param_name(&f.node.name), param_list);
+    let _ = writeln!(
+        out,
+        "{} {}({}) {{",
+        ret,
+        param_name(&f.node.name),
+        param_list
+    );
     emit_block(&mut out, &f.node.body, 1, ret)?;
     // A body that falls off the end returns the zero value, which is what the
     // interpreters do too.
@@ -125,10 +131,25 @@ fn param_name(name: &str) -> String {
     ];
     if RESERVED.contains(&name) {
         format!("vortex_{}", name)
+    } else if BUILTIN_RENAMES.iter().any(|(v, _)| *v == name) {
+        BUILTIN_RENAMES
+            .iter()
+            .find(|(v, _)| *v == name)
+            .map(|(_, c)| c.to_string())
+            .unwrap_or_else(|| name.to_string())
     } else {
         name.to_string()
     }
 }
+
+/// The builtins the generated C provides under a prefixed name, so a Vortex
+/// builtin call and the generated helper are the same thing.
+const BUILTIN_RENAMES: &[(&str, &str)] = &[
+    ("int_to_string", "vortex_int_to_string"),
+    ("float_to_string", "vortex_float_to_string"),
+    ("print", "vortex_print"),
+    ("println", "vortex_println"),
+];
 
 fn indent(out: &mut String, depth: usize) {
     for _ in 0..depth {
@@ -198,7 +219,11 @@ fn emit_stmt(out: &mut String, s: &ast::Stmt, depth: usize, ret: &str) -> Result
             // An if used as a statement. This is the shape the sieve and
             // every loop in it use, and it is why an if statement is emitted
             // rather than refused.
-            ast::ExprKind::If { cond, then, otherwise } => {
+            ast::ExprKind::If {
+                cond,
+                then,
+                otherwise,
+            } => {
                 indent(out, depth);
                 let _ = writeln!(out, "if ({}) {{", emit_expr(cond)?);
                 emit_block(out, then, depth + 1, ret)?;
@@ -327,55 +352,6 @@ fn expr_type_of(e: &ast::Expr) -> &'static str {
 /// rather than emitting something that will not compile.
 /// Emits a block as a single C expression.
 ///
-/// C has no block expression, so a block whose statements can be reduced to
-/// comma expressions is emitted as one. A block containing a loop cannot be,
-/// and is refused naming its position rather than translated wrongly.
-fn emit_block_value(b: &ast::Block) -> Result<String, Unsupported> {
-    if b.stmts.is_empty() {
-        return match &b.tail {
-            Some(t) => emit_expr(t),
-            None => Ok("0".to_string()),
-        };
-    }
-    for s in &b.stmts {
-        if matches!(
-            s.kind,
-            ast::StmtKind::While { .. } | ast::StmtKind::For { .. }
-        ) {
-            return Err(Unsupported::Construct(
-                "a block value containing a loop".to_string(),
-                s.pos,
-            ));
-        }
-    }
-    let mut parts = Vec::new();
-    for s in &b.stmts {
-        parts.push(stmt_as_expression(s)?);
-    }
-    if let Some(t) = &b.tail {
-        parts.push(emit_expr(t)?);
-    }
-    if parts.is_empty() {
-        return Ok("0".to_string());
-    }
-    // A C comma expression evaluates left to right and yields the last, which
-    // is exactly what a block value means.
-    Ok(format!("({})", parts.join(", ")))
-}
-
-/// Emits a statement as a single C expression, so a block value can hold it.
-fn stmt_as_expression(s: &ast::Stmt) -> Result<String, Unsupported> {
-    match &s.kind {
-        ast::StmtKind::Let { init, .. } => emit_expr(init),
-        ast::StmtKind::Expr(e) => emit_expr(e),
-        ast::StmtKind::Return(e) => emit_expr(e),
-        other => Err(Unsupported::Construct(
-            format!("a {:?} inside a block value", other),
-            s.pos,
-        )),
-    }
-}
-
 fn emit_expr(e: &ast::Expr) -> Result<String, Unsupported> {
     Ok(match &e.kind {
         ast::ExprKind::Int(v) => format!("INT64_C({})", v),
@@ -402,28 +378,23 @@ fn emit_expr(e: &ast::Expr) -> Result<String, Unsupported> {
         ast::ExprKind::Not(inner) => format!("!({})", emit_expr(inner)?),
         ast::ExprKind::Binary { op, lhs, rhs } => emit_binary(op, lhs, rhs, e.pos)?,
         ast::ExprKind::Array(items) => {
-            // A list literal is a compound literal, which C builds once and
-            // hands over as a pointer.
+            // A list literal is a call to the generated helper, because a C
+            // compound literal is not valid where a list is built.
             let mut parts = Vec::with_capacity(items.len());
             for i in items {
                 parts.push(emit_expr(i)?);
             }
-            // A raw string, because a C compound literal is full of braces.
             format!(
-                r#"((CList){{ (int64_t[]){{ {} }}, {} }})"#,
-                parts.join(", "),
-                parts.len()
+                "vortex_list_new({}u, (int64_t[]){{ {} }})",
+                parts.len(),
+                parts.join(", ")
             )
         }
         ast::ExprKind::Repeat { value, count } => {
             // `[v; n]` is a counted loop into a fixed buffer.
             let v = emit_expr(value)?;
             let n = emit_expr(count)?;
-            format!(
-                "vortex_list_repeat({n}, {v})",
-                n = n,
-                v = v
-            )
+            format!("vortex_list_repeat({n}, {v})", n = n, v = v)
         }
         ast::ExprKind::Index(base, index) => {
             let b = emit_expr(base)?;
@@ -468,9 +439,7 @@ fn emit_binary(
     rhs: &ast::Expr,
     pos: crate::span::Pos,
 ) -> Result<String, Unsupported> {
-    let string_plus = matches!(op, ast::BinOp::Add)
-        && matches!(lhs.kind, ast::ExprKind::Str(_))
-        && matches!(rhs.kind, ast::ExprKind::Str(_));
+    let string_plus = matches!(op, ast::BinOp::Add) && (is_string_expr(lhs) || is_string_expr(rhs));
     if string_plus {
         return Ok(format!(
             "vortex_str_concat({}, {})",
@@ -481,6 +450,28 @@ fn emit_binary(
     let o = c_operator(op)?;
     let _ = pos;
     Ok(format!("({} {} {})", emit_expr(lhs)?, o, emit_expr(rhs)?))
+}
+
+/// Whether an expression is known to be a Vortex string.
+///
+/// `int_to_string` and `float_to_string` return a string, and that has to be
+/// known before a `+` is emitted, because C `+` on two pointers is address
+/// arithmetic rather than concatenation. An expression whose type is not known
+/// here is treated as a scalar, which is right for every builtin that returns
+/// one.
+fn is_string_expr(e: &ast::Expr) -> bool {
+    match &e.kind {
+        ast::ExprKind::Str(_) => true,
+        ast::ExprKind::Cast(inner, t) => t.name() == "Str" || is_string_expr(inner),
+        ast::ExprKind::Binary { op, lhs, rhs } if matches!(op, ast::BinOp::Add) => {
+            is_string_expr(lhs) || is_string_expr(rhs)
+        }
+        ast::ExprKind::Call { callee, .. } => {
+            matches!(callee.as_str(), "int_to_string" | "float_to_string")
+        }
+        ast::ExprKind::Paren(inner) => is_string_expr(inner),
+        _ => false,
+    }
 }
 
 fn c_operator(op: &ast::BinOp) -> Result<&'static str, Unsupported> {
@@ -538,9 +529,46 @@ pub fn emit_program(
     let _ = writeln!(out, "#include <string.h>");
     // A Vortex list is a pointer and a length, which is what SPEC.md section 7
     // describes: one owner and a known size.
-    let _ = writeln!(out, "typedef struct {{ int64_t *items; int64_t len; }} CList;");
+    let _ = writeln!(
+        out,
+        "typedef struct {{ int64_t *items; int64_t len; }} CList;"
+    );
+    // The builtins a Vortex program calls. Each matches what the tree
+    // interpreter and the VM do, so a program using one gets the same answer on
+    // all three paths.
+    let _ = writeln!(out, "static const char *vortex_int_to_string(int64_t n) {{");
+    let _ = writeln!(out, "    char buf[32];");
+    let _ = writeln!(
+        out,
+        "    snprintf(buf, sizeof(buf), \"%lld\", (long long)n);"
+    );
+    let _ = writeln!(out, "    char *r = (char *)malloc(strlen(buf) + 1);");
+    let _ = writeln!(out, "    strcpy(r, buf);");
+    let _ = writeln!(out, "    return r;");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(
+        out,
+        "static const char *vortex_float_to_string(double f) {{"
+    );
+    let _ = writeln!(out, "    char buf[64];");
+    let _ = writeln!(out, "    snprintf(buf, sizeof(buf), \"%.6f\", f);");
+    let _ = writeln!(out, "    char *r = (char *)malloc(strlen(buf) + 1);");
+    let _ = writeln!(out, "    strcpy(r, buf);");
+    let _ = writeln!(out, "    return r;");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(
+        out,
+        "static void vortex_print(const char *s) {{ fputs(s, stdout); }}"
+    );
+    let _ = writeln!(out, "static void vortex_println(const char *s) {{");
+    let _ = writeln!(out, "    fputs(s, stdout);");
+    let _ = writeln!(out, "    fputc('\\n', stdout);");
+    let _ = writeln!(out, "}}");
     let _ = writeln!(out, "");
-    let _ = writeln!(out, "/* A list is allocated once and owned by its binding. */");
+    let _ = writeln!(
+        out,
+        "/* A list is allocated once and owned by its binding. */"
+    );
     let _ = writeln!(
         out,
         "static CList vortex_list_new(int64_t len, int64_t *values) {{"
@@ -551,38 +579,44 @@ pub fn emit_program(
         out,
         "    l.items = (int64_t *)malloc(sizeof(int64_t) * (size_t)(len > 0 ? len : 1));"
     );
-    let _ = writeln!(out, "    for (int64_t k = 0; k < len; k++) l.items[k] = values[k];");
+    let _ = writeln!(
+        out,
+        "    for (int64_t k = 0; k < len; k++) l.items[k] = values[k];"
+    );
     let _ = writeln!(out, "    return l;");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out, "");
     let _ = writeln!(out, "");
-    let _ = writeln!(out, "/* Vortex string concatenation, which owns its result. */");
+    let _ = writeln!(
+        out,
+        "/* Vortex string concatenation, which owns its result. */"
+    );
     let _ = writeln!(
         out,
         "static const char *vortex_str_concat(const char *a, const char *b) {{"
     );
-    let _ = writeln!(
-        out,
-        "    size_t la = strlen(a), lb = strlen(b);"
-    );
-    let _ = writeln!(
-        out,
-        "    char *r = (char *)malloc(la + lb + 1);"
-    );
+    let _ = writeln!(out, "    size_t la = strlen(a), lb = strlen(b);");
+    let _ = writeln!(out, "    char *r = (char *)malloc(la + lb + 1);");
     let _ = writeln!(out, "    memcpy(r, a, la);");
     let _ = writeln!(out, "    memcpy(r + la, b, lb);");
     let _ = writeln!(out, "    r[la + lb] = '\\0';");
     let _ = writeln!(out, "    return r;");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out, "");
-    let _ = writeln!(out, "static CList vortex_list_repeat(int64_t len, int64_t value) {{");
+    let _ = writeln!(
+        out,
+        "static CList vortex_list_repeat(int64_t len, int64_t value) {{"
+    );
     let _ = writeln!(out, "    CList l;");
     let _ = writeln!(out, "    l.len = len;");
     let _ = writeln!(
         out,
         "    l.items = (int64_t *)malloc(sizeof(int64_t) * (size_t)(len > 0 ? len : 1));"
     );
-    let _ = writeln!(out, "    for (int64_t k = 0; k < len; k++) l.items[k] = value;");
+    let _ = writeln!(
+        out,
+        "    for (int64_t k = 0; k < len; k++) l.items[k] = value;"
+    );
     let _ = writeln!(out, "    return l;");
     let _ = writeln!(out, "}}");
 
@@ -631,7 +665,13 @@ pub fn emit_program(
     // return value is printed only when the program produced no output of its
     // own, so a program that prints is not printed twice.
     let _ = writeln!(out, "int main(void) {{");
-    let _ = writeln!(out, "    vortex_c_entry();");
+    let _ = writeln!(out, "    int64_t r = vortex_c_entry();");
+    // A program that prints its own answer has already written it, so the
+    // returned value is written after a marker the harness can strip.
+    let _ = writeln!(
+        out,
+        "    fprintf(stderr, \"vortex_returned %lld\\n\", (long long)r);"
+    );
     let _ = writeln!(out, "    return 0;\n}}");
     let _ = args;
     Ok(out)
