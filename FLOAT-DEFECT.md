@@ -143,6 +143,43 @@ change: the index read and the index store each emitted an unbalanced cast
 parenthesis, and the typed constructors were called but never emitted, so
 `vortex_list_repeat_f64` was an undeclared function.
 
+## The fourth defect: a call result was declared Int
+
+The full workload found this one, and no reduction program did. It only shows
+up once a Float value crosses a function boundary.
+
+`expr_type_of` had no case for a call, so every call fell through to `int64_t`.
+`let m = matrix_work();` was therefore emitted as
+
+```c
+int64_t m = matrix_work();
+```
+
+which truncated the `double` the callee returned before the entry ever printed
+it. The sieve half was correct, so the checksum read
+`1179908154 3314.000000` against the engines' `1179908154 3314.003906`.
+
+Reduced from the full workload to three programs that all passed before the fix
+was applied: a `return matrix_work();` gave `3314.003906` on all three engines,
+and the same work bound to a `let` gave `3314.000000` on the compiled path and
+`3314.003906` on the tree. That difference is what located it.
+
+The fix is a table of declared return types by name, built once in
+`emit_program` and passed to each function, so a `let` holding a call is
+declared at what the callee returns. `emit_function_alone` exists for the unit
+tests that emit a single function with no program around it; there a call is
+declared Int, because nothing says otherwise.
+
+## The full workload now agrees
+
+`bench/vortex/sieve.vx` on all three paths:
+
+| Path | Output |
+| --- | --- |
+| compiled C | `checksum 1179908154 3314.003906` |
+| tree interpreter | `checksum 1179908154 3314.003906` |
+| bytecode VM | `checksum 1179908154 3314.003906` |
+
 ## A process note that cost three turns
 
 `git checkout <file>` during an edit reverts every fix already verified in that

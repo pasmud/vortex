@@ -69,7 +69,19 @@ fn c_type(t: &ast::TypeExpr) -> Option<&'static str> {
 ///
 /// `body` is the same body the interpreters run, so the three paths execute the
 /// same program rather than three similar ones.
-pub fn emit_function(f: &Spanned<ast::FnDecl>) -> Result<String, Unsupported> {
+/// Emits one function with no knowledge of the rest of the program.
+///
+/// A call inside it is then declared Int, because nothing says what the callee
+/// returns. Use this only when testing a single function in isolation.
+pub fn emit_function_alone(f: &Spanned<ast::FnDecl>) -> Result<String, Unsupported> {
+    let signatures: Signatures = HashMap::new();
+    emit_function(f, &signatures)
+}
+
+pub fn emit_function(
+    f: &Spanned<ast::FnDecl>,
+    signatures: &Signatures,
+) -> Result<String, Unsupported> {
     let ret = match &f.node.ret {
         None => "void",
         Some(t) => c_type(t).ok_or_else(|| {
@@ -101,7 +113,7 @@ pub fn emit_function(f: &Spanned<ast::FnDecl>) -> Result<String, Unsupported> {
         param_list
     );
     let mut lists = HashMap::new();
-    emit_block(&mut out, &f.node.body, 1, ret, &mut lists)?;
+    emit_block(&mut out, &f.node.body, 1, ret, &mut lists, &signatures)?;
     // A body that falls off the end returns the zero value, which is what the
     // interpreters do too.
     let zero = match ret {
@@ -165,9 +177,10 @@ fn emit_block(
     depth: usize,
     ret: &str,
     lists: &mut HashMap<String, &'static str>,
+    signatures: &Signatures,
 ) -> Result<(), Unsupported> {
     for stmt in &b.stmts {
-        emit_stmt(out, stmt, depth, ret, lists)?;
+        emit_stmt(out, stmt, depth, ret, lists, signatures)?;
     }
     if let Some(tail) = &b.tail {
         // A body ending in an expression returns it. SPEC.md section 8 makes a
@@ -175,9 +188,9 @@ fn emit_block(
         // it that way, so the emitted C has to as well.
         indent(out, depth);
         if ret == "void" {
-            let _ = writeln!(out, "{}", emit_expr(tail, lists)?);
+            let _ = writeln!(out, "{}", emit_expr(tail, lists, signatures)?);
         } else {
-            let _ = writeln!(out, "return {};", emit_expr(tail, lists)?);
+            let _ = writeln!(out, "return {};", emit_expr(tail, lists, signatures)?);
         }
     }
     Ok(())
@@ -229,10 +242,11 @@ fn emit_stmt(
     depth: usize,
     ret: &str,
     lists: &mut HashMap<String, &'static str>,
+    signatures: &Signatures,
 ) -> Result<(), Unsupported> {
     match &s.kind {
         ast::StmtKind::Let { name, init, .. } => {
-            let c = expr_type_of(init);
+            let c = expr_type_of(init, signatures);
             // A list binding records its element type, so an index into this
             // name reads through the right cast later in the same walk.
             if let Some(elem) = list_element_type(init) {
@@ -244,11 +258,11 @@ fn emit_stmt(
                 "{} {} = {};",
                 c,
                 param_name(name),
-                emit_expr(init, lists)?
+                emit_expr(init, lists, signatures)?
             );
         }
         ast::StmtKind::Return(e) => {
-            let value = emit_expr(e, lists)?;
+            let value = emit_expr(e, lists, signatures)?;
             if ret == "void" {
                 indent(out, depth);
                 let _ = writeln!(out, "return;");
@@ -277,14 +291,19 @@ fn emit_stmt(
                         out,
                         "((({c} *)({b}).items)[({i})]) = {v};",
                         c = elem,
-                        b = emit_expr(base, lists)?,
-                        i = emit_expr(i, lists)?,
-                        v = emit_expr(value, lists)?
+                        b = emit_expr(base, lists, signatures)?,
+                        i = emit_expr(i, lists, signatures)?,
+                        v = emit_expr(value, lists, signatures)?
                     );
                 }
                 None => {
                     indent(out, depth);
-                    let _ = writeln!(out, "{} = {};", param_name(name), emit_expr(value, lists)?);
+                    let _ = writeln!(
+                        out,
+                        "{} = {};",
+                        param_name(name),
+                        emit_expr(value, lists, signatures)?
+                    );
                 }
             },
             // An if used as a statement. This is the shape the sieve and
@@ -296,14 +315,14 @@ fn emit_stmt(
                 otherwise,
             } => {
                 indent(out, depth);
-                let _ = writeln!(out, "if ({}) {{", emit_expr(cond, lists)?);
-                emit_block(out, then, depth + 1, ret, lists)?;
+                let _ = writeln!(out, "if ({}) {{", emit_expr(cond, lists, signatures)?);
+                emit_block(out, then, depth + 1, ret, lists, signatures)?;
                 match otherwise {
                     Some(else_box) => {
                         indent(out, depth);
                         let _ = writeln!(out, "}} else {{");
                         if let ast::Else::Block(b) = else_box.as_ref() {
-                            emit_block(out, b, depth + 1, ret, lists)?;
+                            emit_block(out, b, depth + 1, ret, lists, signatures)?;
                         } else {
                             return Err(Unsupported::Construct(
                                 "an else if chain in a statement".to_string(),
@@ -323,10 +342,10 @@ fn emit_stmt(
             // which for a call means the call runs.
             ast::ExprKind::Call { .. } => {
                 indent(out, depth);
-                let _ = writeln!(out, "{};", emit_expr(e, lists)?);
+                let _ = writeln!(out, "{};", emit_expr(e, lists, signatures)?);
             }
             _ => {
-                let _ = emit_expr(e, lists)?;
+                let _ = emit_expr(e, lists, signatures)?;
             }
         },
         ast::StmtKind::Break => {
@@ -342,14 +361,14 @@ fn emit_stmt(
         // require before it could be handled more generally.
         ast::StmtKind::Block(inner) => {
             let _ = writeln!(out, "{{");
-            emit_block(out, inner, depth + 1, ret, lists)?;
+            emit_block(out, inner, depth + 1, ret, lists, signatures)?;
             indent(out, depth);
             let _ = writeln!(out, "}}");
         }
         ast::StmtKind::While { cond, body, .. } => {
             indent(out, depth);
-            let _ = writeln!(out, "while ({}) {{", emit_expr(cond, lists)?);
-            emit_block(out, body, depth + 1, ret, lists)?;
+            let _ = writeln!(out, "while ({}) {{", emit_expr(cond, lists, signatures)?);
+            emit_block(out, body, depth + 1, ret, lists, signatures)?;
             indent(out, depth);
             let _ = writeln!(out, "}}");
         }
@@ -368,22 +387,22 @@ fn emit_stmt(
                 Unsupported::Construct("an open ended for range".to_string(), s.pos)
             })?;
             let limit = if *inclusive {
-                format!("({} + 1)", emit_expr(end, lists)?)
+                format!("({} + 1)", emit_expr(end, lists, signatures)?)
             } else {
-                emit_expr(end, lists)?
+                emit_expr(end, lists, signatures)?
             };
             indent(out, depth);
             let _ = writeln!(
                 out,
                 "for (int64_t {} = {}; {} {} {}; {}++) {{",
                 param_name(var),
-                emit_expr(start, lists)?,
+                emit_expr(start, lists, signatures)?,
                 param_name(var),
                 "<",
                 limit,
                 param_name(var)
             );
-            emit_block(out, body, depth + 1, ret, lists)?;
+            emit_block(out, body, depth + 1, ret, lists, signatures)?;
             indent(out, depth);
             let _ = writeln!(out, "}}");
         }
@@ -392,7 +411,14 @@ fn emit_stmt(
 }
 
 /// The C type an expression produces, which decides what a `let` declares.
-fn expr_type_of(e: &ast::Expr) -> &'static str {
+/// The declared return type of each function in the program, by name.
+///
+/// The emitter needs it because a `let` holding a call has to be declared at
+/// what the callee returns. Inferring it from the call expression would always
+/// say Int, which truncated a Float result.
+type Signatures = HashMap<String, &'static str>;
+
+fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> &'static str {
     match &e.kind {
         // A list is a struct with a pointer and a length, not a scalar.
         ast::ExprKind::Array(_) | ast::ExprKind::Repeat { .. } => "CList",
@@ -415,14 +441,21 @@ fn expr_type_of(e: &ast::Expr) -> &'static str {
             // interpreter follows. Without it `v * 0.5 + 1.0` declared an
             // integer and truncated 2.5 to 2.
             _ => {
-                if expr_type_of(lhs) == "double" || expr_type_of(rhs) == "double" {
+                if expr_type_of(lhs, signatures) == "double"
+                    || expr_type_of(rhs, signatures) == "double"
+                {
                     "double"
                 } else {
                     "int64_t"
                 }
             }
         },
-        ast::ExprKind::Neg(inner) => expr_type_of(inner),
+        ast::ExprKind::Neg(inner) => expr_type_of(inner, signatures),
+        // A call returns whatever the callee declares. Without this a `let`
+        // holding a Float result was declared int64_t and truncated it, which
+        // is why `let m = matrix_work();` lost its fraction before the entry
+        // ever printed it.
+        ast::ExprKind::Call { callee, .. } => signatures.get(callee).copied().unwrap_or("int64_t"),
         _ => "int64_t",
     }
 }
@@ -433,7 +466,11 @@ fn expr_type_of(e: &ast::Expr) -> &'static str {
 /// rather than emitting something that will not compile.
 /// Emits a block as a single C expression.
 ///
-fn emit_expr(e: &ast::Expr, lists: &HashMap<String, &'static str>) -> Result<String, Unsupported> {
+fn emit_expr(
+    e: &ast::Expr,
+    lists: &HashMap<String, &'static str>,
+    signatures: &Signatures,
+) -> Result<String, Unsupported> {
     Ok(match &e.kind {
         ast::ExprKind::Int(v) => format!("INT64_C({})", v),
         ast::ExprKind::Float(v) => format!("{:.6}", v),
@@ -444,26 +481,28 @@ fn emit_expr(e: &ast::Expr, lists: &HashMap<String, &'static str>) -> Result<Str
         ast::ExprKind::Call { callee, args } => {
             let mut parts = Vec::with_capacity(args.len());
             for a in args {
-                parts.push(emit_expr(a, lists)?);
+                parts.push(emit_expr(a, lists, signatures)?);
             }
             format!("{}({})", param_name(callee), parts.join(", "))
         }
-        ast::ExprKind::Paren(inner) => format!("({})", emit_expr(inner, lists)?),
+        ast::ExprKind::Paren(inner) => format!("({})", emit_expr(inner, lists, signatures)?),
         ast::ExprKind::Cast(inner, to) => {
             let target = c_type(to).ok_or_else(|| {
                 Unsupported::Construct(format!("a cast to `{}`", to.name()), e.pos)
             })?;
-            format!("(({})({}))", target, emit_expr(inner, lists)?)
+            format!("(({})({}))", target, emit_expr(inner, lists, signatures)?)
         }
-        ast::ExprKind::Neg(inner) => format!("-({})", emit_expr(inner, lists)?),
-        ast::ExprKind::Not(inner) => format!("!({})", emit_expr(inner, lists)?),
-        ast::ExprKind::Binary { op, lhs, rhs } => emit_binary(op, lhs, rhs, e.pos, lists)?,
+        ast::ExprKind::Neg(inner) => format!("-({})", emit_expr(inner, lists, signatures)?),
+        ast::ExprKind::Not(inner) => format!("!({})", emit_expr(inner, lists, signatures)?),
+        ast::ExprKind::Binary { op, lhs, rhs } => {
+            emit_binary(op, lhs, rhs, e.pos, lists, signatures)?
+        }
         ast::ExprKind::Array(items) => {
             // A list literal is a call to the generated helper, because a C
             // compound literal is not valid where a list is built.
             let mut parts = Vec::with_capacity(items.len());
             for i in items {
-                parts.push(emit_expr(i, lists)?);
+                parts.push(emit_expr(i, lists, signatures)?);
             }
             format!(
                 "vortex_list_new({}u, (int64_t[]){{ {} }})",
@@ -474,9 +513,9 @@ fn emit_expr(e: &ast::Expr, lists: &HashMap<String, &'static str>) -> Result<Str
         ast::ExprKind::Repeat { value, count } => {
             // `[v; n]` builds a list of the value's type, so the constructor
             // is chosen by that type rather than by an index.
-            let elem = expr_type_of(value);
-            let v = emit_expr(value, lists)?;
-            let n = emit_expr(count, lists)?;
+            let elem = expr_type_of(value, signatures);
+            let v = emit_expr(value, lists, signatures)?;
+            let n = emit_expr(count, lists, signatures)?;
             format!(
                 "vortex_list_repeat_{}({n}, {v})",
                 list_suffix(elem),
@@ -497,8 +536,8 @@ fn emit_expr(e: &ast::Expr, lists: &HashMap<String, &'static str>) -> Result<Str
                     .unwrap_or("int64_t"),
                 _ => list_element_type(base).unwrap_or("int64_t"),
             };
-            let b = emit_expr(base, lists)?;
-            let i = emit_expr(index, lists)?;
+            let b = emit_expr(base, lists, signatures)?;
+            let i = emit_expr(index, lists, signatures)?;
             format!("((({c} *)({b}).items)[({i})])", c = elem, b = b, i = i)
         }
         ast::ExprKind::Field(base, _) => {
@@ -539,22 +578,23 @@ fn emit_binary(
     rhs: &ast::Expr,
     pos: crate::span::Pos,
     lists: &HashMap<String, &'static str>,
+    signatures: &Signatures,
 ) -> Result<String, Unsupported> {
     let string_plus = matches!(op, ast::BinOp::Add) && (is_string_expr(lhs) || is_string_expr(rhs));
     if string_plus {
         return Ok(format!(
             "vortex_str_concat({}, {})",
-            emit_expr(lhs, lists)?,
-            emit_expr(rhs, lists)?
+            emit_expr(lhs, lists, signatures)?,
+            emit_expr(rhs, lists, signatures)?
         ));
     }
     let o = c_operator(op)?;
     let _ = pos;
     Ok(format!(
         "({} {} {})",
-        emit_expr(lhs, lists)?,
+        emit_expr(lhs, lists, signatures)?,
         o,
-        emit_expr(rhs, lists)?
+        emit_expr(rhs, lists, signatures)?
     ))
 }
 
@@ -774,9 +814,18 @@ pub fn emit_program(
     // `main` is not among them, because emitting it alongside the C entry point
     // gives the translation unit two `main` definitions and C rejects it.
     let wanted = reachable_from(functions, entry);
+    // The declared return type of every function, so a `let` holding a call
+    // can be declared at what the callee actually returns.
+    let mut signatures: Signatures = HashMap::new();
+    for f in functions {
+        signatures.insert(
+            f.node.name.clone(),
+            f.node.ret.as_ref().and_then(c_type).unwrap_or("int64_t"),
+        );
+    }
     for f in functions {
         if wanted.contains(&f.node.name) {
-            let _ = writeln!(out, "{}", emit_function(f)?);
+            let _ = writeln!(out, "{}", emit_function(f, &signatures)?);
         }
     }
 

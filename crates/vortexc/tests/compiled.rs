@@ -200,7 +200,7 @@ fn an_if_expression_is_emitted_as_a_ternary() {
     // A block whose branches both return is emitted as a statement if, which
     // is the same shape the interpreter runs. The value comes from the return,
     // not from a conditional expression.
-    let c = vortexc::cgen::emit_function(f).expect("an if should emit now");
+    let c = vortexc::cgen::emit_function_alone(f).expect("an if should emit now");
     assert!(
         c.contains("if ("),
         "the branch should be an if, said {:?}",
@@ -233,7 +233,7 @@ fn the_emitter_still_refuses_rather_than_emitting_broken_c() {
         .iter()
         .find(|f| f.node.name == "f")
         .expect("the function should be there");
-    match vortexc::cgen::emit_function(f) {
+    match vortexc::cgen::emit_function_alone(f) {
         Ok(_) => panic!("a match should not be emitted yet"),
         Err(e) => {
             let text = e.to_string();
@@ -264,7 +264,7 @@ fn a_list_program_is_emitted_as_a_pointer_and_a_length() {
         .iter()
         .find(|f| f.node.name == "main")
         .expect("main should be there");
-    let c = vortexc::cgen::emit_function(f).expect("a list should emit now");
+    let c = vortexc::cgen::emit_function_alone(f).expect("a list should emit now");
     assert!(
         c.contains("CList"),
         "the declaration should be a list, said {:?}",
