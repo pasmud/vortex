@@ -59,6 +59,7 @@ fn compiled(src: &str) -> Result<String, String> {
         Ok(a) => a,
         Err(e) => return Err(format!("parse: {}", e)),
     };
+    let items = ast.items.clone();
     let functions: Vec<Spanned<FnDecl>> = ast
         .items
         .iter()
@@ -71,7 +72,7 @@ fn compiled(src: &str) -> Result<String, String> {
     // The argument the Vortex `main` passes, so the compiled path runs on the
     // same input as the engines rather than on a value chosen here.
     let arg = argument(&functions, "sum_squares");
-    let c = match vortexc::cgen::emit_program(&functions, "sum_squares", &[arg]) {
+    let c = match vortexc::cgen::emit_program(&items, "sum_squares", &[arg]) {
         Ok(c) => c,
         Err(e) => return Err(format!("not emitted: {}", e)),
     };
@@ -216,9 +217,10 @@ fn an_if_expression_is_emitted_as_a_ternary() {
 #[test]
 fn the_emitter_still_refuses_rather_than_emitting_broken_c() {
     // A construct the emitter does not handle must produce a named reason, not
-    // C that fails to compile with no explanation. A match is the one left.
-    let src = "enum S { a(Int) }
-               fn f(s: Int) -> Int { let x = match s { 1 => 1, _ => 0 }; return x; }
+    // C that fails to compile with no explanation. Indexing a string is the one
+    // left, and stage 11 added it because it was being emitted as a list
+    // access, which is a different thing and did not compile.
+    let src = "fn first(w: Str) -> Str { return w[0]; }
                fn main() -> Int { return 0; }";
     let ast = vortexc::parse(src).expect("should parse");
     let functions: Vec<_> = ast
@@ -231,19 +233,51 @@ fn the_emitter_still_refuses_rather_than_emitting_broken_c() {
         .collect();
     let f = functions
         .iter()
-        .find(|f| f.node.name == "f")
+        .find(|f| f.node.name == "first")
         .expect("the function should be there");
     match vortexc::cgen::emit_function_alone(f) {
-        Ok(_) => panic!("a match should not be emitted yet"),
+        Ok(_) => panic!("indexing a string should not be emitted"),
         Err(e) => {
             let text = e.to_string();
             assert!(
-                text.contains("expression"),
+                text.contains("indexing a string"),
                 "the refusal should name the construct, said {:?}",
                 text
             );
         }
     }
+}
+
+/// A `match` is emitted, and the arms are tried in order, which is what the
+/// tree interpreter does.
+#[test]
+fn a_match_is_emitted() {
+    let src = "fn f(n: Int) -> Int { let x = match n { 0 => 1, _ => 2 }; return x; }
+               fn main() -> Int { return f(0); }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c = vortexc::cgen::emit_program(&ast.items, "main", &[]).expect("a match should emit");
+    assert!(
+        c.contains("=="),
+        "a match on a literal should emit a comparison, said {:?}",
+        c.lines().find(|l| l.contains("?")).unwrap_or("")
+    );
+}
+
+/// A `match` returns the type of its arms, not Int.
+///
+/// Without this a `match` returning a Float was declared int64_t and truncated,
+/// which is the same class of defect stage 8 fixed for a call holding a Float.
+#[test]
+fn a_match_takes_the_type_of_its_arms() {
+    let src = "fn f(n: Int) -> Float { let x = match n { 0 => 1.5, _ => 2.5 }; return x; }
+               fn main() -> Float { return f(0); }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c = vortexc::cgen::emit_program(&ast.items, "main", &[]).expect("a match should emit");
+    assert!(
+        c.contains("double x ="),
+        "a let holding a Float match should be declared double, said {:?}",
+        c.lines().find(|l| l.contains(" x = ")).unwrap_or("")
+    );
 }
 
 #[test]
@@ -286,16 +320,8 @@ fn a_list_program_is_emitted_as_a_pointer_and_a_length() {
 fn a_void_entry_emits_a_void_wrapper() {
     let src = "fn go() {\n    println(\"done\");\n}\n";
     let ast = vortexc::parse(src).expect("a void function should parse");
-    let functions: Vec<Spanned<FnDecl>> = ast
-        .items
-        .iter()
-        .filter_map(|i| match i {
-            Item::Function(f) => Some(f.clone()),
-            _ => None,
-        })
-        .collect();
     let c =
-        vortexc::cgen::emit_program(&functions, "go", &[]).expect("a void function should emit");
+        vortexc::cgen::emit_program(&ast.items, "go", &[]).expect("a void function should emit");
     assert!(
         !c.contains("int64_t vortex_c_entry"),
         "the entry wrapper should be void, said {:?}",

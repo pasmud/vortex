@@ -72,7 +72,7 @@ fn main() {
     // path computes the same answer as the engines rather than a trivial one.
     let arg = arg_for(&functions, func);
 
-    let c = match vortexc::cgen::emit_program(&functions, func, &[arg]) {
+    let c = match vortexc::cgen::emit_program(&ast.items, func, &[arg]) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("not compiled: {}", e);
