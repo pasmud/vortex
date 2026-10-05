@@ -337,3 +337,75 @@ fn a_void_entry_emits_a_void_wrapper() {
             .unwrap_or("")
     );
 }
+
+/// A list of a declared struct carries its elements at the struct's type.
+///
+/// The element type used to default to `int64_t` for anything that was not
+/// `Int`, `Float` or `Str`, so a `Float` field truncated with no diagnostic.
+/// The `Float` field is the point: an `Int` field would have been right at
+/// `int64_t` and would not have shown the defect.
+#[test]
+fn a_list_of_a_struct_keeps_its_float_field() {
+    let src = "struct P { x: Int, y: Float }
+               fn main() -> Int {
+                   var ps = [P { x: 1, y: 2.5 }; 2];
+                   ps[1] = P { x: 7, y: 8.75 };
+                   println(float_to_string(ps[1].y));
+                   return 0;
+               }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c = vortexc::cgen::emit_program(&ast.items, "main", &[])
+        .expect("a list of a struct should emit");
+    // The element type has to be the struct, not an int64_t.
+    assert!(
+        c.contains("vortex_list_new_C"),
+        "a list of a struct should use the struct's constructor, said {:?}",
+        c.lines().find(|l| l.contains("vortex_list_new_C")).unwrap_or("")
+    );
+    assert!(
+        !c.contains("((int64_t *)(ps).items)"),
+        "the elements should not be read at int64_t"
+    );
+}
+
+/// A variant whose payload fields differ in type is carried, not refused.
+///
+/// Those are not a C array, so they go in a generated struct with one field
+/// each. This was a refusal; stage 12 replaced it with support.
+#[test]
+fn a_variant_with_mixed_payload_types_is_carried() {
+    let src = "enum Pair { mixed { n: Int, r: Float } }
+               fn pick(p: Pair) -> Int {
+                   return match p { Pair.mixed { n, r } => n };
+               }
+               fn main() -> Int { return pick(Pair.mixed { n: 5, r: 1.5 }); }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c = vortexc::cgen::emit_program(&ast.items, "main", &[])
+        .expect("a mixed payload variant should emit");
+    assert!(
+        c.contains("int64_t f0; double f1;"),
+        "a mixed payload should be a struct with one field per payload, said {:?}",
+        c.lines().find(|l| l.contains("f0")).unwrap_or("")
+    );
+}
+
+/// An index into a name the emitter cannot type is refused, not guessed.
+///
+/// This used to read at `int64_t`, which is right for an `Int` list and
+/// truncates every `Float` element, so the answer was wrong with no
+/// diagnostic.
+#[test]
+fn an_untyped_index_is_refused_rather_than_read_at_int64() {
+    let src = "fn take(n: Int) -> Int { return hidden[n]; }
+               fn hidden(n: Int) -> Int { return 0; }
+               fn main() -> Int { return take(0); }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let err = vortexc::cgen::emit_program(&ast.items, "main", &[])
+        .expect_err("an index into an untyped name should be refused");
+    let text = err.to_string();
+    assert!(
+        text.contains("element type the emitter cannot name"),
+        "the refusal should say the element type is unknown, said {:?}",
+        text
+    );
+}
