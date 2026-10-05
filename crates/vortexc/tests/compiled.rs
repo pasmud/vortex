@@ -360,7 +360,9 @@ fn a_list_of_a_struct_keeps_its_float_field() {
     assert!(
         c.contains("vortex_list_new_C"),
         "a list of a struct should use the struct's constructor, said {:?}",
-        c.lines().find(|l| l.contains("vortex_list_new_C")).unwrap_or("")
+        c.lines()
+            .find(|l| l.contains("vortex_list_new_C"))
+            .unwrap_or("")
     );
     assert!(
         !c.contains("((int64_t *)(ps).items)"),
