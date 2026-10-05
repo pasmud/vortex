@@ -492,3 +492,115 @@ fn a_function_returning_a_struct_emits() {
             .collect::<Vec<_>>()
     );
 }
+
+/// A struct with a multi-letter mixed-case name gets a zeroed fallback return.
+///
+/// The check that decided whether a return type was a generated struct tested
+/// the C name by letter case: it required everything after the `C` to be
+/// uppercase. A struct named `Point` becomes `CPoint`, `Point` is not all
+/// uppercase, the check said no, and the fallback `return 0;` stood, producing
+/// the exact gcc error the fallback was meant to remove. A single letter name
+/// like `P` took the new path, so a test using one passed either way.
+#[test]
+fn a_mixed_case_struct_name_gets_a_zeroed_fallback_return() {
+    let src = "struct Point { x: Int }
+               struct Vec2 { dx: Float, dy: Float }
+               fn at_origin() -> Point { return Point { x: 7 }; }
+               fn origin() -> Vec2 { return Vec2 { dx: 1.5, dy: 2.5 }; }
+               fn use_both() -> Int {
+                   let a = at_origin();
+                   let b = origin();
+                   if b.dx > 0.0 { return a.x; }
+                   return 0;
+               }
+               fn main() -> Int { return use_both(); }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c = vortexc::cgen::emit_program(&ast.items, "main", &[])
+        .expect("mixed case struct names should emit");
+    assert!(
+        c.contains("return (CPoint){0};"),
+        "a mixed case struct return needs a zeroed value of its own type, said {:?}",
+        c.lines()
+            .filter(|l| l.contains("return (C"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        c.contains("return (CVec2){0};"),
+        "every declared struct needs it, not just a one letter name"
+    );
+    // The old check would have passed a one letter name and failed these, so
+    // this assertion is what the letter case bug could not satisfy.
+    assert!(
+        !c.contains("return 0;\n}") || c.contains("return (C"),
+        "a struct-returning function must not fall back to an integer return"
+    );
+}
+
+/// Two `for ..in` loops in one function do not collide on their temporaries.
+///
+/// The list loop declared `__vortex_for_x` and the string loop declared
+/// `__vortex_n` and `__vortex_i` in the enclosing scope, so two loops over the
+/// same variable name redefined them and gcc reported it. Each loop is now
+/// wrapped in a C block.
+#[test]
+fn two_for_in_loops_in_one_function_do_not_collide() {
+    let src = "fn main() -> Int {
+        var n = 0;
+        for c in \"ab\" { n = n + 1; }
+        for c in \"cd\" { n = n + 1; }
+        for x in [1, 2] { n = n + x; }
+        for x in [3, 4] { n = n + x; }
+        return n;
+    }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c = vortexc::cgen::emit_program(&ast.items, "main", &[]).expect("two loops should emit");
+    // Each loop opens its own block, so its temporaries are scoped to it. Two
+    // loops over the same variable name declared the same names in the
+    // enclosing scope before, and gcc reported the redefinition.
+    // Each loop opens a C block immediately before its temporaries, so the
+    // names are scoped to the loop. Two loops over the same variable name
+    // declared the same names in the enclosing scope before, and gcc reported
+    // the redefinition.
+    for marker in ["CList __vortex_for_x", "const char *__vortex_s_c"] {
+        let all: Vec<&str> = c.lines().collect();
+        let at = all
+            .iter()
+            .position(|l| l.contains(marker))
+            .unwrap_or_else(|| panic!("{} should be emitted", marker));
+        let before = all[..at]
+            .iter()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or_else(|| panic!("{} should have a line before it", marker));
+        assert_eq!(
+            before.trim(),
+            "{",
+            "a C block should open just before {}, said {:?}",
+            marker,
+            before
+        );
+    }
+}
+
+/// A tuple bound by a `let` is refused by name, not emitted as a `CList`.
+///
+/// The refusal matched a tuple literal only, so a name recorded at its
+/// `CTuple` type passed the check and emitted an invalid C initialiser.
+#[test]
+fn a_tuple_bound_by_a_let_is_refused_in_a_for_in() {
+    let src = "fn main() { let t = (1, 2); for x in t { println(int_to_string(x)); } }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let err = vortexc::cgen::emit_program(&ast.items, "main", &[])
+        .expect_err("a tuple bound to a name should be refused in a for-in");
+    let text = err.to_string();
+    assert!(
+        text.contains("for ..in` over a tuple"),
+        "the refusal should name the construct, said {:?}",
+        text
+    );
+    assert!(
+        text.contains("at 1:"),
+        "the refusal should carry a 1-based position, said {:?}",
+        text
+    );
+}

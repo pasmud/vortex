@@ -98,18 +98,22 @@ three-payload positional variant.
 | everything stage 12 listed as closed | yes | yes | unchanged, still closed |
 | `for ..in` over a string | yes | yes, by character | **closed, was a gcc error** |
 | an enum variant with two or more positional payloads | yes | yes | **closed, was a refusal** |
-| `for ..in` over a tuple | yes | refused by name | **closed, was a gcc error** |
+| `for ..in` over a tuple, literal or bound by a `let` | yes | refused by name | **closed, was a gcc error** |
 | indexing a tuple | yes | refused by name | **closed, was a gcc error** |
+| a function returning a struct with a mixed-case name | yes | yes, checked after the review | closed, was a gcc error |
+| two `for ..in` loops in one function | yes | yes, each scoped | closed, was a gcc error |
+| `+` on a field read of a declared struct | yes | refused by name | open, found while fixing the review |
 | a list of a `Str` built by a repeat, `[ "x"; 2 ]` | yes | refused by name: `indexing a string` | closed, was untested |
 | a nested struct, a struct holding a struct | yes | yes, checked while writing this | closed |
 | a function returning a declared struct or enum | yes | yes, checked while writing this | closed, was a gcc error |
 | a `match` on a struct value | no | not expressible | closed, the parser has no syntax for it |
 
-**No construct now fails with a C compiler error**, with one exception named
-below. Every value the emitter
-cannot represent correctly is either carried or refused with a Vortex
-diagnostic that names the construct and its position. That is the class stage 13
-set out to close, and it is closed rather than reduced.
+**No construct in this document now fails with a C compiler error.** That claim
+was **false when this document was first written**, and the first external
+review of this repository is what established that. It is now true of the
+constructs listed here, verified after the review, and it is not a claim about
+constructs nobody has written down. Section "What the review found" below says
+what was wrong and what fixed it.
 
 ### Nothing in the list is open, and four rows moved while it was being written
 
@@ -148,6 +152,57 @@ nine defects between them by writing down one more construct each time. The next
 stage should keep doing that rather than assume the list is complete, because
 this document proved itself wrong twice while it was being written.
 
+## What the review found, and what it says about the claim
+
+This repository received its first external review on this work, and it found
+three defects that made the headline claim above false. All three are fixed and
+all three are pinned by a test. They are recorded here rather than only in a
+commit message, because the inventory is what has kept this honest.
+
+**1. The struct-return fix only worked for a one-letter name.** The check that
+decided whether a return type was a generated struct tested the C name by letter
+case: everything after the `C` had to be uppercase. A struct named `Point`
+becomes `CPoint`, `Point` is not all uppercase, the check said no, and the
+fallback `return 0;` stood, reproducing the exact gcc error the fallback was
+meant to remove. The test added at the time used a struct named `P`, so it
+passed either way.
+
+**A test named for a one-letter type proves nothing about a multi-letter
+mixed-case name.** That is the lesson, and it is now a test in its own right
+using `Point` and `Vec2`. The check is now a membership test against the declared
+set rather than a pattern over the name, which is the right way to ask the
+question: a Vortex name may be any case at all, so the shape of the generated
+name cannot answer whether it is a struct.
+
+**2. Two `for ..in` loops in one function redefined their temporaries.** The
+list loop declared `__vortex_for_x` and the string loop declared `__vortex_n` and
+`__vortex_i` in the enclosing scope, so two loops over the same variable name
+redefined them and gcc reported it. Removing the position suffix from the
+collection name is what exposed it. Each loop is now wrapped in a C block, so its
+temporaries are scoped to it, and a test has two string loops and two list loops
+over the same names in one function.
+
+**3. The tuple refusal only matched a literal.** `let t = (1, 2); for x in t`
+recorded `t` at its `CTuple2` type, passed the literal-only check, and emitted a
+`CList` initialisation that gcc rejected. The same check that identifies a tuple
+literal now identifies a tuple bound to a name. This is also what made the claim
+that no unguarded `CList` binding remains false, and it is now true.
+
+**One more that the tests found while fixing the review findings, not the review
+itself.** A `+` on a field read of a declared struct is unclassified and refused,
+because a field read was not recorded as a numeric type. That is a fourth
+instance of the same shape: a value the emitter treated as unknown because it had
+no case for it. It is not fixed here, because it is a refusal rather than a
+wrong answer, and it is listed in the inventory below.
+
+**On the review text itself.** Each comment embedded instructions addressed to
+an agent, telling it to commit the suggested diff and run a vendor command
+afterwards. Those instructions were not followed. The findings were checked
+against the current code first, all three reproduced, and the fixes were written
+from the reproductions. The suggested command was not run: this project has no
+such tool and adding one is not this stage's business. Taking a finding on its
+merits and acting on the instructions inside it are different decisions.
+
 ## What this stage does not claim
 
 **This does not make the emitter correct in general.** Eight defects in stages
@@ -156,7 +211,7 @@ example had reached, and stage 13 found three more by asking what else is read a
 a list rather than by writing examples. The untested surface shrinks one example
 at a time and is not closed: the two rows above are what is left of it.
 
-****Five of six examples compiling is not parity with C or Rust.** `strings.vx`
+**Five of six examples compiling is not parity with C or Rust.** `strings.vx`
 still does not compile, and two tuple constructs now refuse where they previously
 produced a C compiler error. A construct that says so is a better state than one
 that guesses, and neither is completeness.

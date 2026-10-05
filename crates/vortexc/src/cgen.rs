@@ -1006,7 +1006,12 @@ fn emit_for_in(
 
     // A tuple is not a list, so binding it to a `CList` is the same mistake in a
     // different shape. It is refused by name rather than emitted wrongly.
-    if let ast::ExprKind::Tuple(_) = &source.kind {
+    //
+    // The check covers a tuple bound to a name as well as a literal. A name is
+    // recorded at its `CTuple` type when it is declared, so a literal-only check
+    // let `let t = (1, 2); for x in t` through and emitted a `CList`
+    // initialisation, which is the gcc error this is meant to remove.
+    if tuple_base_type(source, lists).is_some() {
         return Err(Unsupported::Construct(
             "`for ..in` over a tuple".to_string(),
             s.pos,
@@ -1038,22 +1043,32 @@ fn emit_for_in(
     indent(out, depth);
     // The collection is bound once so the loop is not recomputing it, and the
     // loop variable reads its element at the recorded element type.
+    //
+    // The whole loop is wrapped in a C block so its temporaries are scoped to
+    // it. Without that, two list loops over the same variable name in one
+    // function declared the same temporaries twice and gcc reported a
+    // redefinition.
     let collection = format!("__vortex_for_{}", param_name(var));
-    let _ = writeln!(out, "CList {c} = {s};", c = collection, s = src);
-    let _ = writeln!(
-        out,
-        "for (int64_t __vortex_i = 0; __vortex_i < {c}.len; __vortex_i++) {{",
-        c = collection
-    );
+    let _ = writeln!(out, "{{");
+    indent(out, depth + 1);
+    let _ = writeln!(out, "    CList {c} = {s};", c = collection, s = src);
     indent(out, depth + 1);
     let _ = writeln!(
         out,
-        "{t} {v} = (({t} *)({c}.items))[__vortex_i];",
+        "    for (int64_t __vortex_i = 0; __vortex_i < {c}.len; __vortex_i++) {{",
+        c = collection
+    );
+    indent(out, depth + 2);
+    let _ = writeln!(
+        out,
+        "        {t} {v} = (({t} *)({c}.items))[__vortex_i];",
         t = elem,
         v = param_name(var),
         c = collection
     );
-    emit_block(out, body, depth + 1, ret, lists, signatures)?;
+    emit_block(out, body, depth + 2, ret, lists, signatures)?;
+    indent(out, depth + 1);
+    let _ = writeln!(out, "    }}");
     indent(out, depth);
     let _ = writeln!(out, "}}");
     Ok(())
@@ -1081,32 +1096,39 @@ fn emit_for_in_string(
     lists.insert(param_name(var), "int32_t".to_string());
 
     indent(out, depth);
+    // Wrapped in a C block for the same reason the list loop is: two string
+    // loops over the same variable name in one function redefined `__vortex_n`
+    // and `__vortex_i`, and gcc reported the redefinition.
     let collection = format!("__vortex_s_{}", param_name(var));
-    let _ = writeln!(out, "const char *{c} = {s};", c = collection, s = src);
+    let _ = writeln!(out, "{{");
+    let _ = writeln!(out, "    const char *{c} = {s};", c = collection, s = src);
     let _ = writeln!(
         out,
-        "int64_t __vortex_n = (int64_t)strlen({c});",
+        "    int64_t __vortex_n = (int64_t)strlen({c});",
         c = collection
     );
     // A `while` rather than a `for`, because a C `for` increments as well and a
     // character's length is not one byte. The body owns the advance.
-    let _ = writeln!(out, "int64_t __vortex_i = 0;");
-    let _ = writeln!(out, "while (__vortex_i < __vortex_n) {{");
     indent(out, depth + 1);
+    let _ = writeln!(out, "    int64_t __vortex_i = 0;");
+    let _ = writeln!(out, "    while (__vortex_i < __vortex_n) {{");
+    indent(out, depth + 2);
     // Each step decodes the next scalar and advances the index past it, so a
     // multi byte character is one iteration rather than one per byte.
     let _ = writeln!(
         out,
-        "int32_t {v} = vortex_char_at({c}, __vortex_i);",
+        "        int32_t {v} = vortex_char_at({c}, __vortex_i);",
         v = param_name(var),
         c = collection
     );
     let _ = writeln!(
         out,
-        "__vortex_i += vortex_char_len({c}, __vortex_i);",
+        "        __vortex_i += vortex_char_len({c}, __vortex_i);",
         c = collection
     );
-    emit_block(out, body, depth + 1, ret, lists, signatures)?;
+    emit_block(out, body, depth + 2, ret, lists, signatures)?;
+    indent(out, depth + 1);
+    let _ = writeln!(out, "    }}");
     indent(out, depth);
     let _ = writeln!(out, "}}");
     let _ = s;
@@ -2027,12 +2049,18 @@ pub fn emit_program(
 /// agreed with nothing.
 /// Whether a C type is one of the generated structs, which is what a declared
 /// Vortex struct or enum becomes.
+///
+/// The answer comes from the declared set rather than from the name's shape. A
+/// Vortex name may be mixed case, and the generated C name keeps it, so a
+/// pattern over the name cannot tell a struct from `CList` or `CTuple2`.
 fn is_declared_c_type(t: &str) -> bool {
-    t.starts_with('C')
-        && t.len() > 1
-        && t[1..]
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    // Membership of the declared set, not a pattern. The pattern was letter
+    // case, so a struct named `Point` became `CPoint`, `Point` is not all
+    // uppercase, the check said no, and the fallback `return 0;` stood. That
+    // reproduced the exact gcc error this was meant to remove, and only a
+    // single letter name like `P` took the new path, which is why a test using
+    // one passed either way.
+    declared_types().iter().any(|d| d == t)
 }
 
 fn entry_c_type(functions: &[Spanned<ast::FnDecl>], entry: &str) -> String {
