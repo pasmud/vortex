@@ -66,9 +66,21 @@ if [ -n "$refused" ]; then
     echo "(each reason is printed by: $CRUNNER <example> main)"
 fi
 
-# One example being carried is the floor: a regression that takes the compiled
-# path back to nothing should fail rather than pass quietly.
-case "$carried" in
-    *"hello.vx"*) ;;
-    *) fail "the compiled path no longer carries hello.vx" ;;
-esac
+# Every example has to compile. A refusal is a Vortex diagnostic and is the right
+# outcome for a construct the emitter does not carry, but no example currently
+# uses one, so requiring every example to compile turns "the emitter quietly
+# stopped carrying something" from a note in the output into a failing check.
+#
+# The weaker form of this, requiring only `hello.vx`, would let a regression that
+# cost four of seven examples pass. `STAGE14.md` previously claimed a guarantee
+# this script did not give, which is the documentation drifting from the artifact
+# again, so the script was strengthened rather than the claim weakened.
+if [ -n "$refused" ]; then
+    fail "the compiled path refuses:${refused}
+All examples must compile. If a construct is genuinely not carried, it belongs in
+a unit test with a refusal asserted, not in an example."
+fi
+
+if [ -z "$carried" ]; then
+    fail "the compiled path carries no example at all"
+fi

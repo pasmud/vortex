@@ -1,0 +1,62 @@
+// Arithmetic on struct fields, and every scalar type a field can be.
+//
+// Stage 13's inventory listed `+` on a field read of a declared struct as open,
+// and it was the fourth time a value had been treated as unknown because the
+// emitter had no case for it. This is that case.
+//
+// Both field types are here. An `Int` field and a `Float` field are the two the
+// letter-case bug made easy to get wrong in one direction only, and a fix that
+// worked for `Int` alone would be the same mistake again: an `Int` field is
+// `int64_t`, which is the emitter's default and therefore looks right whether or
+// not anything was fixed. The `Float` field is `double`, so it is the one that
+// shows whether the declared type is actually being read.
+//
+// The field read is resolved through the base's recorded type, so a field of a
+// struct held in a variable, in a list element and returned from a function all
+// resolve the same way. The last case is here because a call returning a struct
+// was one of the five instances of the shape `STAGE14.md` records.
+
+struct Point {
+    x: Int,
+    y: Float,
+    label: Str,
+}
+
+fn origin() -> Point {
+    return Point { x: 0, y: 0.0, label: "o" };
+}
+
+// Reads a field of a struct a function returned, which is the case where the
+// base is a call rather than a name.
+fn base_of(p: Point) -> Int {
+    return p.x;
+}
+
+fn main() -> Int {
+    let a = Point { x: 2, y: 1.5, label: "a" };
+    let b = Point { x: 3, y: 2.5, label: "b" };
+
+    // An Int field, added.
+    println(int_to_string(a.x + b.x));
+
+    // A Float field, added. This is the one an `int64_t` default would truncate.
+    println(float_to_string(a.y + b.y));
+
+    // A field of a struct a call returned. Passing a struct to a function moves
+    // it, so these calls come last among the reads of `a` and `b`.
+    println(int_to_string(base_of(a) + base_of(b)));
+
+    // A field of a struct held in a list element, at the element type. The list
+    // is built by repeating `origin()` and one element is overwritten.
+    var points = [origin(); 2];
+    points[1] = Point { x: 4, y: 4.0, label: "d" };
+    println(int_to_string(points[0].x + points[1].x));
+    println(float_to_string(points[0].y + points[1].y));
+
+    // A text field is not numeric, so a `+` on it is a concatenation rather than
+    // arithmetic. That is why the two field types above are read from their
+    // declared type and this one is not read as a number at all.
+    println(Point { x: 1, y: 1.0, label: "p" }.label + "q");
+
+    return 0;
+}
