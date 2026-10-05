@@ -93,12 +93,78 @@ struct Lowerer {
 
 /// What a name currently refers to.
 #[derive(Clone, Copy)]
-enum Binding {
-    /// A `var` or a `var` parameter. May be assigned to.
-    Mutable(ir::Slot),
-    /// A `let` or an immutable parameter. `SPEC.md` section 8 makes an
-    /// assignment to one an error.
-    Immutable(ir::Slot),
+struct Binding {
+    slot: ir::Slot,
+    /// Whether this binding may be assigned to. `SPEC.md` section 8 makes an
+    /// assignment to anything else an error.
+    mutable: bool,
+    /// Whether the value this binding owns has been moved out.
+    ///
+    /// `SPEC.md` section 7 says every value has exactly one owner, that
+    /// passing or assigning moves it, and that the moved-from binding is dead.
+    /// The scalar types are `Copy` in that section, so moving one copies it and
+    /// the binding stays live; only the aggregate types make it dead.
+    moved: bool,
+    /// Whether this binding holds a scalar, and so survives a move.
+    copyable: bool,
+}
+
+/// Whether a lowered expression is a scalar, so the binding it feeds survives a
+/// move.
+///
+/// Only the forms the lowering pass already knows are classified. Anything it
+/// cannot classify is treated as copyable, because the cost of that is a missed
+/// diagnostic and the cost of the other choice is rejecting a program that
+/// should compile.
+fn ir_expr_is_copyable(e: &ir::Expr) -> bool {
+    match e {
+        ir::Expr::Const { value, .. } => matches!(
+            value,
+            ir::Const::Int(_) | ir::Const::Float(_) | ir::Const::Bool(_) | ir::Const::Char(_)
+        ),
+        ir::Expr::Binary { op, .. } => matches!(
+            op,
+            ast::BinOp::Add | ast::BinOp::Sub | ast::BinOp::Mul | ast::BinOp::Div | ast::BinOp::Rem
+        ),
+        ir::Expr::Load { .. }
+        | ir::Expr::Cast { .. }
+        | ir::Expr::Store { .. }
+        | ir::Expr::Unary { .. } => true,
+        _ => false,
+    }
+}
+
+/// The names in a call's arguments whose values the call consumes.
+///
+/// Only a plain name and a field read of a plain name are recognised, because
+/// those are the forms whose ownership can be decided syntactically. Anything
+/// more complex, such as an arithmetic expression, builds a value that the call
+/// consumes without any binding being moved.
+fn moved_names_in(args: &[ast::Expr]) -> Vec<String> {
+    args.iter()
+        .filter_map(|a| match &a.kind {
+            ast::ExprKind::Ident(n) => Some(n.clone()),
+            // A field read is not a move. `SPEC.md` section 7 gives the
+            // struct its own fields, and reading one copies the field, which
+            // for every field type in v0.1 is a scalar. Marking the base moved
+            // here rejected `p.x` followed by `p.y`, which is a program that
+            // should compile.
+            ast::ExprKind::Field(..) => None,
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether a value of this type survives being moved.
+///
+/// `SPEC.md` section 7 says values that are scalars or aggregates of scalars
+/// are `Copy` and are duplicated on assignment rather than moved. Everything
+/// else is an aggregate that owns something, so moving it kills the binding.
+fn is_scalar_type(ty: &ast::TypeExpr) -> bool {
+    matches!(
+        ty.name(),
+        "Int" | "Float" | "Bool" | "Char" | "Str" | "Unit"
+    )
 }
 
 /// Per function state: the scopes open right now, and the next free slot.
@@ -132,6 +198,66 @@ impl FnState {
         self.scopes.iter().rev().find_map(|s| s.get(name).copied())
     }
 
+    /// Carries the moved flags of the scope at `depth` back to the scope that
+    /// encloses it, so a move inside a loop body outlives the body.
+    fn carry_moved_out(&mut self, depth: usize) {
+        let moved: Vec<(String, ir::Slot)> = self
+            .scopes
+            .get(depth)
+            .map(|scope| {
+                scope
+                    .iter()
+                    .filter(|(_, b)| b.moved)
+                    .map(|(n, b)| (n.clone(), b.slot))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if moved.is_empty() {
+            return;
+        }
+        for (name, slot) in moved {
+            for scope in self.scopes[..depth].iter_mut().rev() {
+                if let Some(b) = scope.get_mut(&name) {
+                    if b.slot == slot && !b.copyable {
+                        b.moved = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Clears the moved flag on a scalar binding, so reading it makes it live
+    /// again. `SPEC.md` section 7 copies a scalar rather than moving it.
+    fn clear_moved(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(b) = scope.get_mut(name) {
+                b.moved = false;
+                return;
+            }
+        }
+    }
+
+    /// Marks a binding moved, unless it holds a scalar.
+    fn mark_moved(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(b) = scope.get_mut(name) {
+                if !b.copyable {
+                    b.moved = true;
+                }
+                return;
+            }
+        }
+    }
+
+    /// Marks every aggregate in a list of names moved, as a call taking several
+    /// arguments does.
+    fn mark_all_moved(&mut self, names: &[String]) {
+        for n in names {
+            self.mark_moved(n);
+        }
+    }
+
     /// Whether the name is declared in the innermost scope, so that shadowing
     /// an outer binding of the same name can be rejected.
     fn declared_here(&self, name: &str) -> bool {
@@ -148,6 +274,7 @@ impl Lowerer {
 
         let mut params = Vec::new();
         for p in &f.node.params {
+            let copyable = is_scalar_type(&p.ty);
             if st.declared_here(&p.name) {
                 return Err(LowerError {
                     message: format!("parameter `{}` is declared twice", p.name),
@@ -158,9 +285,19 @@ impl Lowerer {
             st.declare(
                 &p.name,
                 if p.mutable {
-                    Binding::Mutable(slot)
+                    Binding {
+                        slot,
+                        mutable: true,
+                        moved: false,
+                        copyable,
+                    }
                 } else {
-                    Binding::Immutable(slot)
+                    Binding {
+                        slot,
+                        mutable: false,
+                        moved: false,
+                        copyable,
+                    }
                 },
             );
             params.push(ir::Param {
@@ -186,7 +323,12 @@ impl Lowerer {
     fn block(&mut self, b: &ast::Block, st: &mut FnState) -> Result<ir::Block, LowerError> {
         // A function body already has a scope open for its parameters.
         st.scopes.push(HashMap::new());
+        let depth = st.scopes.len();
         let result = self.block_inner(b, st);
+        // A move inside a loop body outlives the body, because the body runs
+        // again. Carrying the flags out is what makes `take(p)` twice inside a
+        // while an error rather than silently compiling.
+        st.carry_moved_out(depth);
         st.scopes.pop();
         result
     }
@@ -251,13 +393,24 @@ impl Lowerer {
                     });
                 }
                 let value = self.expr(init, st)?;
+                let copyable = ir_expr_is_copyable(&value);
                 let slot = st.alloc();
                 st.declare(
                     name,
                     if *mutable {
-                        Binding::Mutable(slot)
+                        Binding {
+                            slot,
+                            mutable: true,
+                            moved: false,
+                            copyable,
+                        }
                     } else {
-                        Binding::Immutable(slot)
+                        Binding {
+                            slot,
+                            mutable: false,
+                            moved: false,
+                            copyable,
+                        }
                     },
                 );
                 out.push(ir::Stmt::Let {
@@ -318,7 +471,16 @@ impl Lowerer {
                 // not leak into the body of the loop after it.
                 let slot = st.alloc();
                 st.scopes.push(HashMap::new());
-                st.declare(var, Binding::Mutable(slot));
+                // A for variable is always an Int, so it is a scalar.
+                st.declare(
+                    var,
+                    Binding {
+                        slot,
+                        mutable: true,
+                        moved: false,
+                        copyable: true,
+                    },
+                );
                 let b = self.block_in_scope(body, st)?;
                 st.scopes.pop();
                 match (s_expr, e_expr) {
@@ -380,8 +542,22 @@ impl Lowerer {
 
             // A bare name is a variable read, or a call with no arguments.
             ast::ExprKind::Ident(name) => match st.lookup(name) {
-                Some(Binding::Mutable(slot)) | Some(Binding::Immutable(slot)) => {
-                    ir::Expr::Load { slot, pos }
+                Some(b) => {
+                    if b.moved && !b.copyable {
+                        return Err(LowerError {
+                            message: format!(
+                                "`{}` has been moved and cannot be used again; `SPEC.md` section 7 gives every value exactly one owner",
+                                name
+                            ),
+                            pos,
+                        });
+                    }
+                    if b.moved {
+                        // A scalar was copied rather than moved, so the
+                        // binding is live again.
+                        st.clear_moved(name);
+                    }
+                    ir::Expr::Load { slot: b.slot, pos }
                 }
                 None => {
                     if self.functions.contains_key(name) {
@@ -408,6 +584,10 @@ impl Lowerer {
             },
 
             ast::ExprKind::Call { callee, args } => {
+                // A call takes ownership of the values it is handed, so an
+                // aggregate argument is moved into it. A struct literal builds
+                // a new value and is not one.
+                let consumed = moved_names_in(args);
                 let target = self.call_target(callee, pos)?;
                 // A callee's arguments live in its own frame, so the caller
                 // reserves one slot per argument. Without this a function that
@@ -437,12 +617,16 @@ impl Lowerer {
                 for a in args {
                     lowered.push(self.expr(a, st)?);
                 }
-                ir::Expr::Call {
+                let call = ir::Expr::Call {
                     target,
                     args: lowered,
                     arg_slots,
                     pos,
-                }
+                };
+                // The call has taken ownership, so an aggregate argument's
+                // binding is dead from here on.
+                st.mark_all_moved(&consumed);
+                call
             }
 
             ast::ExprKind::Neg(inner) => ir::Expr::Unary {
@@ -465,8 +649,8 @@ impl Lowerer {
                     // mutated list back after changing one element. The name
                     // itself must be a `var`, since this changes it.
                     let base_slot = match st.lookup(name) {
-                        Some(Binding::Mutable(slot)) => slot,
-                        Some(Binding::Immutable(_)) => {
+                        Some(b) if b.mutable => b.slot,
+                        Some(_) => {
                             return Err(LowerError {
                                 message: format!(
                                     "cannot assign into `{}` because it was declared with `let`",
@@ -496,8 +680,8 @@ impl Lowerer {
                 }
 
                 let slot = match st.lookup(name) {
-                    Some(Binding::Mutable(slot)) => slot,
-                    Some(Binding::Immutable(_)) => {
+                    Some(b) if b.mutable => b.slot,
+                    Some(_) => {
                         return Err(LowerError {
                             message: format!(
                                 "cannot assign to `{}` because it was declared with `let`",
@@ -877,7 +1061,15 @@ impl Lowerer {
                 let mut slots = Vec::with_capacity(bindings.len());
                 for n in bindings {
                     let slot = st.alloc();
-                    st.declare(n, Binding::Immutable(slot));
+                    st.declare(
+                        n,
+                        Binding {
+                            slot,
+                            mutable: false,
+                            moved: false,
+                            copyable: true,
+                        },
+                    );
                     slots.push(ir::Binding {
                         slot,
                         name: n.clone(),
@@ -891,7 +1083,15 @@ impl Lowerer {
             }
             ast::PatternKind::Binding(name) => {
                 let slot = st.alloc();
-                st.declare(name, Binding::Immutable(slot));
+                st.declare(
+                    name,
+                    Binding {
+                        slot,
+                        mutable: false,
+                        moved: false,
+                        copyable: true,
+                    },
+                );
                 ir::Pattern::Binding(ir::Binding {
                     slot,
                     name: name.clone(),
