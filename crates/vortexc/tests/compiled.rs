@@ -76,7 +76,12 @@ fn compiled(src: &str) -> Result<String, String> {
         Err(e) => return Err(format!("not emitted: {}", e)),
     };
 
-    let dir = std::env::temp_dir().join("vortex-cgen-test");
+    // A directory per call. Keying by process id is not enough, because two
+    // tests share one process and the second overwrote the first's binary,
+    // which then failed with "Text file busy".
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("vortex-cgen-test-{}-{}", std::process::id(), n));
     let _ = std::fs::create_dir_all(&dir);
     let cfile = dir.join("program.c");
     let bin = dir.join("program");
@@ -99,7 +104,16 @@ fn compiled(src: &str) -> Result<String, String> {
     let out = Command::new(&bin)
         .output()
         .map_err(|e| format!("could not run the compiled program: {}", e))?;
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    // The generated binary writes what main returned to standard error, and a
+    // program that prints an answer writes it to standard output instead.
+    let returned = String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .find(|l| l.starts_with("vortex_returned "))
+        .map(|l| l.trim_start_matches("vortex_returned ").to_string());
+    Ok(match returned {
+        Some(v) if !v.is_empty() => v,
+        _ => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+    })
 }
 
 /// The literal argument the Vortex `main` passes to the named function.
@@ -165,10 +179,10 @@ fn the_compiled_path_gets_the_expected_answer_not_just_the_same_one() {
 // ---------------------------------------------------------------- what it does not do
 
 #[test]
-fn the_emitter_refuses_rather_than_emitting_broken_c() {
-    // A construct the emitter does not handle must produce a named reason, not
-    // C that fails to compile with no explanation.
-    let src = "fn f(n: Int) -> Int { if n > 1 { return 1; } return 0; }
+fn an_if_expression_is_emitted_as_a_ternary() {
+    // An if in a value position became a C conditional, which keeps a block
+    // value out of the emitted source entirely.
+    let src = "fn f(n: Int) -> Int { if n > 1 { 1 } else { 0 } }
                fn main() -> Int { let r = f(1); return r; }";
     let ast = vortexc::parse(src).expect("should parse");
     let functions: Vec<_> = ast
@@ -183,12 +197,48 @@ fn the_emitter_refuses_rather_than_emitting_broken_c() {
         .iter()
         .find(|f| f.node.name == "f")
         .expect("the function should be there");
+    // A block whose branches both return is emitted as a statement if, which
+    // is the same shape the interpreter runs. The value comes from the return,
+    // not from a conditional expression.
+    let c = vortexc::cgen::emit_function(f).expect("an if should emit now");
+    assert!(
+        c.contains("if ("),
+        "the branch should be an if, said {:?}",
+        c
+    );
+    assert!(
+        c.contains("return"),
+        "each branch should return, said {:?}",
+        c
+    );
+}
+
+#[test]
+fn the_emitter_still_refuses_rather_than_emitting_broken_c() {
+    // A construct the emitter does not handle must produce a named reason, not
+    // C that fails to compile with no explanation. A match is the one left.
+    let src = "enum S { a(Int) }
+               fn f(s: Int) -> Int { let x = match s { 1 => 1, _ => 0 }; return x; }
+               fn main() -> Int { return 0; }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let functions: Vec<_> = ast
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Function(f) => Some(f.clone()),
+            _ => None,
+        })
+        .collect();
+    let f = functions
+        .iter()
+        .find(|f| f.node.name == "f")
+        .expect("the function should be there");
     match vortexc::cgen::emit_function(f) {
-        Ok(_) => panic!("an if expression should not be emitted yet"),
+        Ok(_) => panic!("a match should not be emitted yet"),
         Err(e) => {
             let text = e.to_string();
             assert!(
-                text.contains("if"),
+                text.contains("expression"),
                 "the refusal should name the construct, said {:?}",
                 text
             );
@@ -197,10 +247,10 @@ fn the_emitter_refuses_rather_than_emitting_broken_c() {
 }
 
 #[test]
-fn a_list_program_is_refused_because_the_emitter_has_no_list_type() {
-    // v0.1 has no C mapping for a list, so a program using one is refused with
-    // a position rather than translated wrongly.
-    let src = "fn main() -> Int { let a = [1, 2]; return 0; }";
+fn a_list_program_is_emitted_as_a_pointer_and_a_length() {
+    // A Vortex list is one owner and a known size, which is what SPEC.md
+    // section 7 describes, so it becomes a C struct with a pointer and a length.
+    let src = "fn main() -> Int { let a = [1, 2]; return a[0]; }";
     let ast = vortexc::parse(src).expect("should parse");
     let functions: Vec<_> = ast
         .items
@@ -214,8 +264,15 @@ fn a_list_program_is_refused_because_the_emitter_has_no_list_type() {
         .iter()
         .find(|f| f.node.name == "main")
         .expect("main should be there");
-    match vortexc::cgen::emit_function(f) {
-        Ok(_) => panic!("a list should not be emitted yet"),
-        Err(_) => {}
-    }
+    let c = vortexc::cgen::emit_function(f).expect("a list should emit now");
+    assert!(
+        c.contains("CList"),
+        "the declaration should be a list, said {:?}",
+        c
+    );
+    assert!(
+        c.contains("vortex_list_new"),
+        "a list literal should build a list, said {:?}",
+        c
+    );
 }

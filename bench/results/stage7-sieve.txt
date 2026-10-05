@@ -1,0 +1,25 @@
+Vortex execution path measurement, stage 7
+==========================================
+
+Repeats:        5
+Workload:       /workspace/repo/bench/vortex/sieve.vx
+Compiled C:     cc (Debian 12.2.0-14+deb12u1) 12.2.0
+Rust:           rustc 1.99.0 (b940084d7 2026-09-28)
+Machine:        Linux 6.18.35 x86_64 on Intel(R) Core(TM) i5-8500T CPU @ 2.10GHz
+
+PATH          RUN TIMES IN ms, THEN CHECKSUM
+-------------  ------------------------------------------------
+C             18 23 19 17 18 | checksum 1179908154 3314.003906
+Rust          23 19 20 22 23 | checksum 1179908154 3314.003906
+Vortex C      52 44 48 43 39 | 1179908154
+Vortex tree   3276 3232 3284 3262 3233 | checksum 1179908154 3314.003906
+Vortex VM     5027 4997 5026 4993 5029 | checksum 1179908154 3314.003906
+
+The checksums are printed so a reader can see whether the paths agree,
+rather than being asked to take it.
+
+What the Vortex C row covers: the sieve only. The emitted C for
+bench/vortex/sieve.vx reports a matrix value of 3143 against 3314.003906
+from the two engines, so the compiled path does not yet agree on the whole
+workload. That row is a sieve measurement and is labelled as one. No
+figure for the full workload is claimed until the three agree.

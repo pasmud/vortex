@@ -104,14 +104,31 @@ fn main() {
         std::process::exit(1);
     }
 
-    let compiled = run(&bin.to_string_lossy(), &[]);
-    let tree = vortexc::run_source(&src, &mut std::io::sink());
-    let vm = vortexc::run_on_vm(&src, &mut std::io::sink());
+    // The compiled binary writes the value main returned to standard error, so
+    // the comparison works whether the program printed an answer or returned
+    // one.
+    let compiled = {
+        let out = std::process::Command::new(&bin)
+            .output()
+            .expect("the compiled program should run");
+        let returned = String::from_utf8_lossy(&out.stderr)
+            .lines()
+            .find(|l| l.starts_with("vortex_returned "))
+            .map(|l| l.trim_start_matches("vortex_returned ").to_string())
+            .unwrap_or_default();
+        if returned.is_empty() {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        } else {
+            returned
+        }
+    };
+    let tree = value_of(vortexc::run_source(&src, &mut std::io::sink()));
+    let vm = value_of(vortexc::run_on_vm(&src, &mut std::io::sink()));
 
     println!("--- results ---");
-    println!("compiled C : {}", compiled.trim());
-    println!("tree        : {}", tree_value(&tree));
-    println!("vm          : {}", vm_value(&vm));
+    println!("compiled C : {}", compiled);
+    println!("tree        : {}", tree);
+    println!("vm          : {}", vm);
 
     let _ = std::io::stdout().flush();
 }
@@ -147,22 +164,8 @@ fn arg_for(functions: &[vortexc::ast::Spanned<vortexc::ast::FnDecl>], func: &str
     "INT64_C(0)".to_string()
 }
 
-fn run(bin: &str, args: &[&str]) -> String {
-    let out = Command::new(bin)
-        .args(args)
-        .output()
-        .expect("the compiled program should run");
-    String::from_utf8_lossy(&out.stdout).trim().to_string()
-}
-
-fn tree_value(r: &Result<vortexc::Value, vortexc::Error>) -> String {
-    match r {
-        Ok(v) => vortexc::interp::display(&v),
-        Err(e) => format!("error: {}", e),
-    }
-}
-
-fn vm_value(r: &Result<vortexc::Value, vortexc::Error>) -> String {
+/// What an engine returned, as text.
+fn value_of(r: Result<vortexc::Value, vortexc::Error>) -> String {
     match r {
         Ok(v) => vortexc::interp::display(&v),
         Err(e) => format!("error: {}", e),
