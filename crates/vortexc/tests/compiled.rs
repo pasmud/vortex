@@ -76,10 +76,12 @@ fn compiled(src: &str) -> Result<String, String> {
         Err(e) => return Err(format!("not emitted: {}", e)),
     };
 
-    // A per process directory, because two tests running at once would
-    // otherwise overwrite each other's binary and one would fail with "Text
-    // file busy".
-    let dir = std::env::temp_dir().join(format!("vortex-cgen-test-{}", std::process::id()));
+    // A directory per call. Keying by process id is not enough, because two
+    // tests share one process and the second overwrote the first's binary,
+    // which then failed with "Text file busy".
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("vortex-cgen-test-{}-{}", std::process::id(), n));
     let _ = std::fs::create_dir_all(&dir);
     let cfile = dir.join("program.c");
     let bin = dir.join("program");
