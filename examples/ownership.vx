@@ -1,0 +1,55 @@
+// Linear ownership, as a program.
+//
+// `SPEC.md` section 7 says every value has exactly one owner, assigning or
+// passing moves it, and the moved-from binding is dead. `DECISION.md` records
+// that stage 5 kept that model and did not enforce it yet, so this program
+// demonstrates the model rather than a checker for it.
+//
+// The diagnostic this shape would produce once enforcement exists is a lowering
+// error naming the dead binding, and it is shown in
+// `crates/vortexc/tests/ownership.rs`.
+//
+// v0.1 has no syntax for a list type, so the list is built where its type is
+// inferred.
+
+struct Pair {
+    left: Int,
+    right: Int,
+}
+
+// Takes a value by move. The caller no longer owns it.
+fn consume(label: Str, n: Int) -> Int {
+    println(label + " consumed " + int_to_string(n));
+    return n * 2;
+}
+
+fn main() -> Int {
+    // A value moves into a call and comes back only as the result.
+    let n = 21;
+    let doubled = consume("n", n);
+    println(int_to_string(doubled));
+
+    // A struct is one value. Its fields are read, not aliased.
+    let p = Pair { left: 3, right: 4 };
+    println(int_to_string(p.left * p.right));
+
+    // One binding owns the list for its whole life. It is `var` because a
+    // store into an element changes the list itself, and section 8.1 makes
+    // that a mutation of the binding rather than of the element. Storing
+    // changes the list in place rather than copying it, so a store costs the
+    // same whatever the length of the list.
+    var owned = [1, 2, 3];
+    var total = 0;
+    var i = 0;
+    while i < 3 {
+        owned[i] = owned[i] + 10;
+        total = total + owned[i];
+        i = i + 1;
+    }
+    println(int_to_string(total));
+
+    // A second binding for the same list is how aliasing would be introduced,
+    // so enforcement will reject this once it exists. See
+    // crates/vortexc/tests/ownership.rs for the diagnostic shape.
+    return 0;
+}
