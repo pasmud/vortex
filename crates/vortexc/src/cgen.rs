@@ -242,13 +242,6 @@ fn emit_stmt(out: &mut String, s: &ast::Stmt, depth: usize, ret: &str) -> Result
             indent(out, depth);
             let _ = writeln!(out, "}}");
         }
-        other => {
-            let _ = other;
-            return Err(Unsupported::Construct(
-                "this statement form".to_string(),
-                s.pos,
-            ));
-        }
     }
     Ok(())
 }
@@ -486,14 +479,4 @@ fn collect_calls_expr(e: &ast::Expr, out: &mut Vec<String>) {
         }
         _ => {}
     }
-}
-
-/// The C return type of the entry function, which the harness casts through.
-fn entry_return(functions: &[Spanned<ast::FnDecl>], entry: &str) -> &'static str {
-    functions
-        .iter()
-        .find(|f| f.node.name == entry)
-        .and_then(|f| f.node.ret.as_ref())
-        .and_then(|t| c_type(t))
-        .unwrap_or("int64_t")
 }
