@@ -83,6 +83,15 @@ spill traffic for a register allocation pass to remove. `STAGE9.md` records the
 assembly, the before and after measurements, and what the gap actually consists
 of instead.
 
+Stage 9 then predicted the remaining gaps only do harm because gcc at -O2 hides
+them. **Stage 10 tested that** by building the same emitted C at -O0. The
+compiled path is still correct at -O0 and still prints
+`checksum 1179908154 3314.003906`, so those gaps are real gaps in the emitter
+and not correctness bugs today. Building the examples at -O0 did find one
+correctness bug that -O2 was repairing: a Vortex function with no declared
+return type was emitted as returning `int64_t`, which -O2 accepts with a
+warning and -O0 rejects. `STAGE10.md` records it.
+
 The Vortex matrix half needed the `as` cast, which stage 4 added. Before it, the
 Vortex row covered the sieve only and the table said so. Stage 8 fixed four
 further defects in the compiled path, recorded in `FLOAT-DEFECT.md`, and only

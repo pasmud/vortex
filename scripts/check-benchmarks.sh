@@ -404,4 +404,46 @@ echo "STAGE9.md's figures appear in bench/results/stage9-before.txt and"
 echo "bench/results/stage9-after.txt, and the stage 8 spread it compares against"
 echo "is recorded in bench/results/stage8-compiled-full.txt."
 
+# --- STAGE10.md -------------------------------------------------------------
+#
+# Stage 10 builds the same emitted C at -O0. The document quotes runs from one
+# transcript, so the shape is the same as the STAGE7 check.
+ST10="$ROOT/STAGE10.md"
+T10="$ROOT/bench/results/stage10-o0.txt"
+
+[ -f "$ST10" ] || fail "STAGE10.md is missing"
+[ -f "$T10" ] || fail "bench/results/stage10-o0.txt is missing"
+
+S10FLAT=$(tr '\n' ' ' < "$ST10" | tr ',' ' ' | tr -s ' ')
+T10FLAT=$(tr '\n' ' ' < "$T10" | tr ',' ' ' | tr -s ' ')
+
+for row in "49 47 56 48 49" "61 62 64 65 66" "17 18 20 22 18"; do
+    case "$S10FLAT" in
+        *"$row"*) ;;
+        *) fail "STAGE10.md does not quote the run '$row'" ;;
+    esac
+    case "$T10FLAT" in
+        *"$row"*) ;;
+        *) fail "STAGE10.md quotes the run '$row' and stage10-o0.txt does not record it" ;;
+    esac
+done
+
+# The -O0 row must be present in the transcript and must carry the checksum.
+case "$T10FLAT" in
+    *"Vortex C -O0"*) ;;
+    *) fail "the stage 10 transcript has no -O0 row" ;;
+esac
+case "$S10FLAT" in
+    *"1179908154 3314.003906"*) ;;
+    *) fail "STAGE10.md does not record the checksum" ;;
+esac
+# The document has to say the -O0 figures are gcc's, not Vortex's.
+case "$S10FLAT" in
+    *"gcc figures"*) ;;
+    *) fail "STAGE10.md does not label the -O0 figures as gcc figures rather than Vortex figures" ;;
+esac
+
+echo "STAGE10.md's figures appear in bench/results/stage10-o0.txt, and it labels"
+echo "the -O0 numbers as gcc's rather than as Vortex performance."
+
 echo "The check is satisfied."

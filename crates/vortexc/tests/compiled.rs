@@ -276,3 +276,38 @@ fn a_list_program_is_emitted_as_a_pointer_and_a_length() {
         c
     );
 }
+
+/// A function that declares no return type returns nothing.
+///
+/// This was emitted as returning `int64_t`, so the generated entry read
+/// `return vortex_main();` on a `void` function. gcc at -O2 accepts that with
+/// a warning and gcc at -O0 rejects it, which is how it survived several stages.
+#[test]
+fn a_void_entry_emits_a_void_wrapper() {
+    let src = "fn go() {\n    println(\"done\");\n}\n";
+    let ast = vortexc::parse(src).expect("a void function should parse");
+    let functions: Vec<Spanned<FnDecl>> = ast
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Function(f) => Some(f.clone()),
+            _ => None,
+        })
+        .collect();
+    let c =
+        vortexc::cgen::emit_program(&functions, "go", &[]).expect("a void function should emit");
+    assert!(
+        !c.contains("int64_t vortex_c_entry"),
+        "the entry wrapper should be void, said {:?}",
+        c.lines()
+            .find(|l| l.contains("vortex_c_entry"))
+            .unwrap_or("")
+    );
+    assert!(
+        c.contains("void vortex_c_entry(void)"),
+        "the entry wrapper should declare void, said {:?}",
+        c.lines()
+            .find(|l| l.contains("vortex_c_entry"))
+            .unwrap_or("")
+    );
+}
