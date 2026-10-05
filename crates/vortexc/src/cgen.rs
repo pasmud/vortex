@@ -150,6 +150,11 @@ pub fn emit_function(
     emit_block(&mut out, &f.node.body, 1, &ret, &mut lists, &signatures)?;
     // A body that falls off the end returns the zero value, which is what the
     // interpreters do too.
+    // A declared struct or enum return has no zero literal in C, so the
+    // fallback is a zeroed value of that type. Emitting `return 0;` there
+    // produced "incompatible types when returning type 'int' but 'CP' was
+    // expected", which is a gcc error naming a C type rather than a Vortex
+    // diagnostic.
     let zero = match ret.as_str() {
         "double" => "0.0",
         "const char *" => "0",
@@ -158,6 +163,8 @@ pub fn emit_function(
     };
     if zero.is_empty() {
         let _ = writeln!(out, "    return;");
+    } else if is_declared_c_type(&ret) {
+        let _ = writeln!(out, "    return ({t}){{0}};", t = ret);
     } else {
         let _ = writeln!(out, "    return {};", zero);
     }
@@ -235,18 +242,28 @@ fn emit_block(
 ///
 /// A name is looked up in the recorded bindings, a literal is its own type, and
 /// anything else is not a string.
-fn string_base_type(
-    e: &ast::Expr,
-    _signatures: &Signatures,
-    lists: &HashMap<String, String>,
-) -> Option<&'static str> {
+/// The C type of a base expression when it is a tuple, so indexing one is
+/// refused by name rather than emitted as a list access.
+fn tuple_base_type(e: &ast::Expr, lists: &HashMap<String, String>) -> Option<String> {
+    match &e.kind {
+        ast::ExprKind::Tuple(_) => Some("a tuple".to_string()),
+        ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).map(|s| s.as_str()) {
+            Some(t) if t.starts_with("CTuple") => Some(t.to_string()),
+            _ => None,
+        },
+        ast::ExprKind::Paren(inner) => tuple_base_type(inner, lists),
+        _ => None,
+    }
+}
+
+fn string_base_type(e: &ast::Expr, lists: &HashMap<String, String>) -> Option<&'static str> {
     match &e.kind {
         ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).map(|s| s.as_str()) {
             Some("const char *") => Some("Str"),
             _ => None,
         },
         ast::ExprKind::Str(_) => Some("Str"),
-        ast::ExprKind::Paren(inner) => string_base_type(inner, _signatures, lists),
+        ast::ExprKind::Paren(inner) => string_base_type(inner, lists),
         _ => None,
     }
 }
@@ -651,7 +668,7 @@ fn c_type_of_expr(e: &ast::Expr, _signatures: &Signatures) -> String {
 ///
 fn emit_expr(
     e: &ast::Expr,
-    lists: &HashMap<String, String>,
+    lists: &mut HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<String, Unsupported> {
     Ok(match &e.kind {
@@ -721,9 +738,19 @@ fn emit_expr(
             // array and does not compile for a string. Refusing it by name is
             // better than emitting C that happens to compile and means
             // something else.
-            if string_base_type(base, signatures, lists).is_some() {
+            if string_base_type(base, lists).is_some() {
                 return Err(Unsupported::Construct(
                     "indexing a string".to_string(),
+                    e.pos,
+                ));
+            }
+            // A tuple has no list representation, so indexing one emitted a list
+            // access and gcc reported a request for `.items` on a struct. A
+            // tuple is indexed by a pattern in a `match`, not by an index
+            // expression, so this refuses it by name.
+            if tuple_base_type(base, lists).is_some() {
+                return Err(Unsupported::Construct(
+                    "indexing a tuple".to_string(),
                     e.pos,
                 ));
             }
@@ -938,7 +965,7 @@ fn emit_expr(
 /// wrapped in a statement expression so it is an expression in C.
 fn emit_block_expr(
     b: &ast::Block,
-    lists: &HashMap<String, String>,
+    lists: &mut HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<String, Unsupported> {
     match &b.tail {
@@ -955,15 +982,10 @@ fn emit_block_expr(
 /// A list is a pointer and a length, so the loop is an index over its elements
 /// reading at the element type recorded for that list. A string is walked by
 /// byte, which is what the interpreters do; the element type is `char`.
-/// A number that keeps two temporaries apart when two loops on the same line
-/// each declare one.
-fn e_pos_of_var(_var: &str) -> usize {
-    0
-}
 
 fn emit_for_in(
     out: &mut String,
-    _stmt: &ast::Stmt,
+    s: &ast::Stmt,
     var: &str,
     source: &ast::Expr,
     body: &ast::Block,
@@ -972,23 +994,51 @@ fn emit_for_in(
     lists: &mut HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<(), Unsupported> {
+    // `for` can walk a list, a string or a tuple, and each has a different C
+    // representation. Which one it is has to be decided here rather than
+    // inferred: this used to assume a list, so walking a string bound a `const
+    // char *` to a `CList` and gcc reported "invalid initializer", which says
+    // nothing about Vortex.
+    if string_base_type(source, lists).is_some() {
+        return emit_for_in_string(out, s, var, source, body, depth, ret, lists, signatures);
+    }
     let src = emit_expr(source, lists, signatures)?;
+
+    // A tuple is not a list, so binding it to a `CList` is the same mistake in a
+    // different shape. It is refused by name rather than emitted wrongly.
+    if let ast::ExprKind::Tuple(_) = &source.kind {
+        return Err(Unsupported::Construct(
+            "`for ..in` over a tuple".to_string(),
+            s.pos,
+        ));
+    }
+
     let elem = match &source.kind {
-        ast::ExprKind::Str(_) => "char".to_string(),
-        _ => match &source.kind {
-            ast::ExprKind::Ident(n) => lists
-                .get(&param_name(n))
-                .cloned()
-                .or_else(|| list_element_type(source))
-                .unwrap_or_else(|| "int64_t".to_string()),
-            _ => list_element_type(source).unwrap_or_else(|| "int64_t".to_string()),
+        ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).cloned() {
+            Some(t) => t,
+            // An unrecorded name is not a list of Int. Reading it as one was the
+            // stage 12 defect, so it is refused rather than assumed.
+            None => {
+                return Err(Unsupported::Construct(
+                    format!(
+                        "`for ..in` over `{}`, whose element type the emitter cannot name",
+                        n
+                    ),
+                    s.pos,
+                ))
+            }
         },
+        _ => list_element_type_or_refuse(source)?,
     };
+
+    // The loop variable is a binding at the element type, so a later `+` on it
+    // can tell arithmetic from concatenation.
+    lists.insert(param_name(var), elem.clone());
+
     indent(out, depth);
     // The collection is bound once so the loop is not recomputing it, and the
     // loop variable reads its element at the recorded element type.
-    indent(out, depth);
-    let collection = format!("__vortex_for{}_{}", e_pos_of_var(var), param_name(var));
+    let collection = format!("__vortex_for_{}", param_name(var));
     let _ = writeln!(out, "CList {c} = {s};", c = collection, s = src);
     let _ = writeln!(
         out,
@@ -996,9 +1046,6 @@ fn emit_for_in(
         c = collection
     );
     indent(out, depth + 1);
-    // The loop variable is a binding at the element type, so a later `+` on it
-    // can tell arithmetic from concatenation.
-    lists.insert(param_name(var), elem.clone());
     let _ = writeln!(
         out,
         "{t} {v} = (({t} *)({c}.items))[__vortex_i];",
@@ -1009,6 +1056,60 @@ fn emit_for_in(
     emit_block(out, body, depth + 1, ret, lists, signatures)?;
     indent(out, depth);
     let _ = writeln!(out, "}}");
+    Ok(())
+}
+
+/// Emits `for c in s { ... }` over a string.
+///
+/// A Vortex string walks by character, which is a Unicode scalar and not a
+/// byte, so the loop is over the decoded characters rather than over the
+/// bytes. The helper decodes one scalar per call, so what the loop variable
+/// holds is a character, matching the tree interpreter.
+fn emit_for_in_string(
+    out: &mut String,
+    s: &ast::Stmt,
+    var: &str,
+    source: &ast::Expr,
+    body: &ast::Block,
+    depth: usize,
+    ret: &str,
+    lists: &mut HashMap<String, String>,
+    signatures: &Signatures,
+) -> Result<(), Unsupported> {
+    let src = emit_expr(source, lists, signatures)?;
+    // The loop variable is a `Char` binding, not a list element.
+    lists.insert(param_name(var), "int32_t".to_string());
+
+    indent(out, depth);
+    let collection = format!("__vortex_s_{}", param_name(var));
+    let _ = writeln!(out, "const char *{c} = {s};", c = collection, s = src);
+    let _ = writeln!(
+        out,
+        "int64_t __vortex_n = (int64_t)strlen({c});",
+        c = collection
+    );
+    // A `while` rather than a `for`, because a C `for` increments as well and a
+    // character's length is not one byte. The body owns the advance.
+    let _ = writeln!(out, "int64_t __vortex_i = 0;");
+    let _ = writeln!(out, "while (__vortex_i < __vortex_n) {{");
+    indent(out, depth + 1);
+    // Each step decodes the next scalar and advances the index past it, so a
+    // multi byte character is one iteration rather than one per byte.
+    let _ = writeln!(
+        out,
+        "int32_t {v} = vortex_char_at({c}, __vortex_i);",
+        v = param_name(var),
+        c = collection
+    );
+    let _ = writeln!(
+        out,
+        "__vortex_i += vortex_char_len({c}, __vortex_i);",
+        c = collection
+    );
+    emit_block(out, body, depth + 1, ret, lists, signatures)?;
+    indent(out, depth);
+    let _ = writeln!(out, "}}");
+    let _ = s;
     Ok(())
 }
 
@@ -1023,7 +1124,7 @@ fn emit_match(
     e: &ast::Expr,
     scrutinee: &ast::Expr,
     arms: &[ast::Arm],
-    lists: &HashMap<String, String>,
+    lists: &mut HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<String, Unsupported> {
     if arms.is_empty() {
@@ -1046,6 +1147,12 @@ fn emit_match(
         // The pattern's bindings become ordinary C locals before the body, so
         // the body needs no rewriting. The statement expression's value is its
         // last expression, which is the body.
+        // The arm's bindings are ordinary names in its body, so they are
+        // recorded as bindings. Without that a `+` on a pattern binding was
+        // unclassified and refused, which is what a two payload variant hit.
+        for p in &arm.patterns {
+            record_pattern_bindings(p, lists);
+        }
         let decls = declare_pattern_bindings(&arm.patterns, &subject);
         let body = emit_expr(&arm.body, lists, signatures)?;
         // With no declarations there is nothing for a statement expression to
@@ -1072,7 +1179,7 @@ fn emit_match(
 fn match_pattern_test(
     patterns: &[ast::Pattern],
     subject: &str,
-    lists: &HashMap<String, String>,
+    lists: &mut HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<String, Unsupported> {
     if patterns.is_empty() {
@@ -1094,7 +1201,7 @@ fn match_pattern_test(
 fn match_pattern_test_one(
     p: &ast::Pattern,
     subject: &str,
-    lists: &HashMap<String, String>,
+    lists: &mut HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<String, Unsupported> {
     match &p.kind {
@@ -1145,6 +1252,32 @@ fn match_pattern_test_one(
                 i = index
             ))
         }
+    }
+}
+
+/// Records the names a pattern binds, with the C type of what they hold, so a
+/// `+` on one can tell arithmetic from concatenation.
+fn record_pattern_bindings(p: &ast::Pattern, lists: &mut HashMap<String, String>) {
+    match &p.kind {
+        ast::PatternKind::Binding(name) => {
+            lists.insert(param_name(name), "int64_t".to_string());
+        }
+        ast::PatternKind::Tuple(items) => {
+            for item in items {
+                record_pattern_bindings(item, lists);
+            }
+        }
+        ast::PatternKind::Variant {
+            ty,
+            variant,
+            bindings,
+            ..
+        } => {
+            for (i, name) in bindings.iter().enumerate() {
+                lists.insert(param_name(name), variant_payload_type(ty, variant, i));
+            }
+        }
+        ast::PatternKind::Wildcard | ast::PatternKind::Literal(_) => {}
     }
 }
 
@@ -1280,7 +1413,7 @@ fn emit_binary(
     lhs: &ast::Expr,
     rhs: &ast::Expr,
     pos: crate::span::Pos,
-    lists: &HashMap<String, String>,
+    lists: &mut HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<String, Unsupported> {
     let adding = matches!(op, ast::BinOp::Add);
@@ -1330,13 +1463,13 @@ fn emit_binary(
 fn both_numeric(
     lhs: &ast::Expr,
     rhs: &ast::Expr,
-    lists: &HashMap<String, String>,
+    lists: &mut HashMap<String, String>,
     signatures: &Signatures,
 ) -> bool {
     numeric_in(lhs, lists, signatures) && numeric_in(rhs, lists, signatures)
 }
 
-fn numeric_in(e: &ast::Expr, lists: &HashMap<String, String>, signatures: &Signatures) -> bool {
+fn numeric_in(e: &ast::Expr, lists: &mut HashMap<String, String>, signatures: &Signatures) -> bool {
     match &e.kind {
         ast::ExprKind::Int(_) | ast::ExprKind::Float(_) | ast::ExprKind::Bool(_) => true,
         ast::ExprKind::Cast(_, t) => t.name() == "Int" || t.name() == "Float",
@@ -1622,6 +1755,58 @@ pub fn emit_program(
     }
     let _ = writeln!(out, "");
 
+    // Decoding one Unicode scalar from a UTF-8 string, so `for c in s` walks
+    // characters rather than bytes. A Vortex `Char` is a Unicode scalar, so a
+    // byte loop would be a different program: it would iterate three times over
+    // a three byte character and produce a different answer.
+    let _ = writeln!(
+        out,
+        "static int32_t vortex_char_at(const char *s, int64_t i) {{"
+    );
+    let _ = writeln!(
+        out,
+        "    const unsigned char *u = (const unsigned char *)s;"
+    );
+    let _ = writeln!(out, "    unsigned char c0 = u[i];");
+    let _ = writeln!(out, "    if (c0 < 0x80) return (int32_t)c0;");
+    let _ = writeln!(out, "    int32_t cp; int extra;");
+    let _ = writeln!(
+        out,
+        "    if ((c0 & 0xE0) == 0xC0) {{ cp = c0 & 0x1F; extra = 1; }}"
+    );
+    let _ = writeln!(
+        out,
+        "    else if ((c0 & 0xF0) == 0xE0) {{ cp = c0 & 0x0F; extra = 2; }}"
+    );
+    let _ = writeln!(
+        out,
+        "    else if ((c0 & 0xF8) == 0xF0) {{ cp = c0 & 0x07; extra = 3; }}"
+    );
+    let _ = writeln!(out, "    else return 0xFFFD;");
+    let _ = writeln!(out, "    for (int k = 1; k <= extra; k++) {{");
+    let _ = writeln!(out, "        unsigned char b = u[i + k];");
+    let _ = writeln!(out, "        if ((b & 0xC0) != 0x80) return 0xFFFD;");
+    let _ = writeln!(out, "        cp = (cp << 6) | (b & 0x3F);");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "    return cp;");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(
+        out,
+        "static int64_t vortex_char_len(const char *s, int64_t i) {{"
+    );
+    let _ = writeln!(
+        out,
+        "    const unsigned char *u = (const unsigned char *)s;"
+    );
+    let _ = writeln!(out, "    unsigned char c0 = u[i];");
+    let _ = writeln!(out, "    if (c0 < 0x80) return 1;");
+    let _ = writeln!(out, "    if ((c0 & 0xE0) == 0xC0) return 2;");
+    let _ = writeln!(out, "    if ((c0 & 0xF0) == 0xE0) return 3;");
+    let _ = writeln!(out, "    if ((c0 & 0xF8) == 0xF0) return 4;");
+    let _ = writeln!(out, "    return 1;");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out, "");
+
     // One constructor per element type. The struct carries a void * because a
     // Vortex list is not homogeneous in C's type system, so the element type
     // has to be named at the call site. Declaring them here means a call may
@@ -1840,6 +2025,16 @@ pub fn emit_program(
 /// It is the entry function's declared return type, so a 64 bit `Int` is not
 /// truncated on the way out. Casting it through `int` gave a wrong answer that
 /// agreed with nothing.
+/// Whether a C type is one of the generated structs, which is what a declared
+/// Vortex struct or enum becomes.
+fn is_declared_c_type(t: &str) -> bool {
+    t.starts_with('C')
+        && t.len() > 1
+        && t[1..]
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
 fn entry_c_type(functions: &[Spanned<ast::FnDecl>], entry: &str) -> String {
     functions
         .iter()

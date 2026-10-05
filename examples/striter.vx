@@ -1,0 +1,50 @@
+// Walking a string, and an enum variant with two positional payloads.
+//
+// Stage 12 wrote the list of constructs no example reached, and two of them
+// were programs the tree interpreter runs and the compiled path could not.
+//
+// `for c in s` over a STRING was the worst thing in the repository at the time.
+// The emitter assumed every `for ..in` walked a list, so it bound a `const
+// char *` to a `CList` and gcc reported "invalid initializer". That is a gcc
+// error naming a C type the user never wrote, which points at the compiler
+// rather than at the language. It is now a character walk.
+//
+// The second character is two bytes and the emoji is four, so a byte loop would
+// iterate eight times and print a different answer. A Vortex `Char` is a
+// Unicode scalar, so the loop decodes one scalar per step and advances past it.
+// The count on the last line is 4, not 9, and that is the assertion this example
+// exists to make.
+//
+// An enum variant with TWO positional payloads was refused, because a `+` on the
+// two names a pattern binds was unclassified. A pattern's bindings are ordinary
+// names in the arm body, and recording them is what fixes it.
+
+enum Size {
+    // Two positional payloads of different types, so not a C array either.
+    pair(Int, Float),
+    triple(Int, Int, Int),
+}
+
+fn total(s: Size) -> Int {
+    return match s {
+        Size.pair(a, b) => a + (b as Int),
+        Size.triple(a, b, c) => a + b + c,
+    };
+}
+
+fn main() -> Int {
+    // Every character of a mixed width string, and how many there were.
+    var count = 0;
+    for c in "aé😀b" {
+        count = count + 1;
+        print(int_to_string(c as Int));
+        print(" ");
+    }
+    println("");
+    println(int_to_string(count));
+
+    println(int_to_string(total(Size.pair(2, 1.5))));
+    println(int_to_string(total(Size.triple(1, 2, 3))));
+
+    return 0;
+}

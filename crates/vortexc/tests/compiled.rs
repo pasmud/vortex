@@ -411,3 +411,84 @@ fn an_untyped_index_is_refused_rather_than_read_at_int64() {
         text
     );
 }
+
+/// `for c in s` walks a string by character, not by byte.
+///
+/// The emitter assumed every `for ..in` walked a list, so it bound a
+/// `const char *` to a `CList` and gcc reported "invalid initializer", naming a
+/// C type the user never wrote. A Vortex `Char` is a Unicode scalar, so a byte
+/// loop would also be a different program.
+#[test]
+fn a_for_in_over_a_string_is_emitted() {
+    let src = "fn main() -> Int { var n = 0; for c in \"aé😀b\" { n = n + 1; } return n; }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c = vortexc::cgen::emit_program(&ast.items, "main", &[])
+        .expect("a for-in over a string should emit");
+    assert!(
+        !c.contains("CList __vortex_for"),
+        "a string should not be bound to a CList, said {:?}",
+        c.lines().find(|l| l.contains("__vortex_for")).unwrap_or("")
+    );
+    assert!(
+        c.contains("vortex_char_at"),
+        "a string walk should decode a scalar per step, said {:?}",
+        c.lines()
+            .find(|l| l.contains("vortex_char_at"))
+            .unwrap_or("")
+    );
+}
+
+/// A `for ..in` over a tuple is refused by name rather than bound to a `CList`.
+#[test]
+fn a_for_in_over_a_tuple_is_refused() {
+    let src = "fn main() -> Int { for t in (1, 2) { print(int_to_string(t)); } return 0; }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let err = vortexc::cgen::emit_program(&ast.items, "main", &[])
+        .expect_err("a for-in over a tuple should be refused");
+    assert!(
+        err.to_string().contains("for ..in` over a tuple"),
+        "the refusal should name the construct, said {:?}",
+        err.to_string()
+    );
+}
+
+/// Indexing a tuple is refused by name.
+///
+/// A tuple is indexed by a pattern in a `match`, not by an index expression.
+/// This emitted a list access, so gcc reported a request for `.items` on a
+/// struct, which points at the C compiler rather than at Vortex.
+#[test]
+fn indexing_a_tuple_is_refused() {
+    let src = "fn main() -> Int { let t = (1, 2); return t[0]; }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let err = vortexc::cgen::emit_program(&ast.items, "main", &[])
+        .expect_err("indexing a tuple should be refused");
+    assert!(
+        err.to_string().contains("indexing a tuple"),
+        "the refusal should name the construct, said {:?}",
+        err.to_string()
+    );
+}
+
+/// A function returning a declared struct emits a fallback return at that type.
+///
+/// The emitter appended `return 0;` to every function, so a struct-returning one
+/// got an integer return at the end and gcc reported "incompatible types when
+/// returning type 'int' but 'CP' was expected". That is a gcc error naming a C
+/// type rather than a Vortex diagnostic, which is the class stage 13 closes.
+#[test]
+fn a_function_returning_a_struct_emits() {
+    let src = "struct P { x: Int }
+               fn mk() -> P { return P { x: 7 }; }
+               fn main() -> Int { let a = mk(); return a.x; }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c = vortexc::cgen::emit_program(&ast.items, "main", &[])
+        .expect("a struct-returning function should emit");
+    assert!(
+        c.contains("return (CP){0};"),
+        "the fallback return should be a zeroed value of the declared type, said {:?}",
+        c.lines()
+            .filter(|l| l.contains("return (C"))
+            .collect::<Vec<_>>()
+    );
+}
