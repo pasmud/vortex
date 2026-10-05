@@ -1,15 +1,19 @@
 // The reference workload, written in Vortex.
 //
 // The same arithmetic, in the same order, as bench/c/sieve.c and
-// bench/rust/src/main.rs. The checksum this prints has to equal theirs, which
-// is `1179908154 3314.003906`, and it does.
+// bench/rust/src/main.rs. This prints `checksum 1179908154 3314.003906`, the
+// same value both baselines print, so bench/run.sh will give this row a time.
 //
-// One detail matters for that. The C baseline accumulates into a `uint32_t`, so
-// the sum wraps at 2^32. Vortex `Int` is 64 bit, so a plain sum does not wrap
-// and gives 142913828922 instead. The loop below masks to 32 bits on every
-// addition, which is what the baseline does, and that is why the two agree.
-// Masking rather than widening is deliberate: a Vortex program that wants the
-// true sum should not have to imitate a C overflow.
+// Two details matter for that, and both are recorded rather than stumbled on.
+//
+// The C baseline accumulates into a `uint32_t`, so the sieve sum wraps at 2^32.
+// Vortex `Int` is 64 bit, so a plain sum gives 142913828922. `wrap32` masks to
+// the width the baselines use. Masking rather than widening the Vortex type is
+// deliberate: a program that wants the true sum should not have to imitate a C
+// overflow.
+//
+// The matrix part needs `Int` to `Float` and back, which `SPEC.md` section 6.1
+// rule 4 forbids implicitly and requires to be written as `as`.
 //
 // This uses the two forms stage 3 added: a list of a computed length,
 // `[0; limit + 1]`, and index assignment, `composite[j] = 1`.
@@ -35,7 +39,6 @@ fn sieve_sum(limit: Int) -> Int {
             i = i + 1;
             continue;
         }
-        // The baselines add in uint32_t, so the sum wraps.
         total = wrap32(total + i);
 
         // The inner loop runs only while i squared is within the limit, so the
@@ -51,8 +54,66 @@ fn sieve_sum(limit: Int) -> Int {
     total
 }
 
+// The same matrix workload as the baselines: a 256 by 256 pair of arrays, eight
+// passes of add then scale, and the trace summed.
+fn matrix_work() -> Float {
+    let n = 256;
+    let size = n * n;
+
+    var a = [0.0; size];
+    var b = [0.0; size];
+    var c = [0.0; size];
+
+    var i = 0;
+    while i < n {
+        var j = 0;
+        while j < n {
+            a[i * n + j] = ((i + j) % 17) as Float;
+            b[i * n + j] = ((i * 3 + j * 5) % 23) as Float;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Eight passes, each one two full sweeps over the arrays, exactly as the
+    // baselines do it.
+    var k = 0;
+    while k < 8 {
+        // c = a + b
+        var p = 0;
+        while p < n {
+            var q = 0;
+            while q < n {
+                c[p * n + q] = a[p * n + q] + b[p * n + q];
+                q = q + 1;
+            }
+            p = p + 1;
+        }
+        // a = c * 0.5 + 1.0
+        var r = 0;
+        while r < n {
+            var s = 0;
+            while s < n {
+                a[r * n + s] = c[r * n + s] * 0.5 + 1.0;
+                s = s + 1;
+            }
+            r = r + 1;
+        }
+        k = k + 1;
+    }
+
+    var total = 0.0;
+    var m = 0;
+    while m < n {
+        total = total + a[m * n + m];
+        m = m + 1;
+    }
+    total
+}
+
 fn main() -> Int {
     let s = sieve_sum(2000000);
-    println("checksum " + int_to_string(s));
+    let m = matrix_work();
+    println("checksum " + int_to_string(s) + " " + float_to_string(m));
     return 0;
 }

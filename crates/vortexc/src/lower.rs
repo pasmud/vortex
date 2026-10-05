@@ -27,6 +27,11 @@ pub const BUILTINS: &[&str] = &[
     "now_ns",
 ];
 
+/// The type names a cast may name, which is the built in numeric pair plus
+/// `Int` and `Float` themselves. `SPEC.md` section 6.1 rule 4 only needs a way
+/// between Int and Float, and nothing else is legal yet.
+pub const CAST_TYPES: &[&str] = &["Int", "Float", "Char"];
+
 /// Lowers a parsed program.
 pub fn lower(program: &ast::Program) -> Result<ir::Program, LowerError> {
     let mut l = Lowerer {
@@ -686,6 +691,17 @@ impl Lowerer {
                     },
                     args: lowered,
                     arg_slots: Vec::new(),
+                    pos,
+                }
+            }
+
+            // `e as T` is a cast builtin, so an executor has one case for it
+            // rather than one per source and target type.
+            ast::ExprKind::Cast(inner, ty) => {
+                let v = self.expr(inner, st)?;
+                ir::Expr::Cast {
+                    value: Box::new(v),
+                    to: ty.clone(),
                     pos,
                 }
             }

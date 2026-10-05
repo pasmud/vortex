@@ -34,55 +34,43 @@ Acceptance criteria:
       requests.
 - [x] The example programs under `examples/` are covered by a test.
 
-## Stage 2, active: parser, AST and a tree interpreter
+## Stage 2, complete: parser, AST and a tree interpreter
 
-Scope: parse every program in `examples/` into an AST, and execute them in a
-tree interpreter.
+Merged in pull request #4.
+
+## Stage 3, complete: types and diagnostics
+
+Merged in pull request #6. Every rule in `SPEC.md` section 6 is enforced or
+recorded as unimplemented in `crates/vortexc/DIAGNOSTICS.md`, and the two
+`SPEC.md` section 8.2 gaps are closed.
+
+## Stage 4, active: bytecode VM and measured optimisation
+
+Scope: compile the lowered form to bytecode, execute it on a VM, and measure it
+against the tree interpreter on the same workload.
 
 Acceptance criteria:
 
-- [x] The parser parses every file in `examples/` without error.
-- [x] Every `examples/` program runs and prints a line that a test compares to
-      an expected value. The expectation lives in the test, not in the example.
-      `crates/vortexc/tests/interp.rs` holds them.
-- [x] Errors from the parser name line, column and what was expected, in the
-      same style as stage 1. `crates/vortexc/tests/parser.rs` asserts real
-      positions, including one case where a column counts characters rather
-      than bytes.
-- [x] The tree interpreter supports `fn`, `let`, `var`, `struct`, `enum`,
-      `if`/`else`, `while`, `for`, `match`, `break`, `continue` and `return`.
-      Both `for` forms work: `for x in a..=b` counts and `for x in e` walks a
-      list, a tuple or a string.
-- [x] `cargo test --workspace` passes, with the interpreter tests counted
-      separately from the lexer tests. 144 passing: 6 unit, 46 lexer,
-      41 parser, 51 interpreter.
-- [x] The AST is lowered once, as `SPEC.md` section 10.1 asks, so stage 4 adds a
-      consumer rather than rewriting the frontend. `crates/vortexc/src/ir.rs`
-      holds the lowered form and `crates/vortexc/src/lower.rs` the pass.
-- [ ] `bench/run.sh` gains a Vortex row that runs a real algorithm. **Not met,
-      and the reason is recorded rather than worked around.** The C and Rust
-      baselines implement a sieve over a byte array. Vortex v0.1 cannot write
-      it: there is no index assignment, so `a[i] = v` is a parse error, and
-      there is no list of a computed length, so the flag array cannot be
-      allocated. Both are listed in `SPEC.md` section 8.2 and explained in
-      `bench/vortex/README.md`. The row reads `n/a` and says why, and no Vortex
-      time is recorded or estimated. Adding index assignment and a list
-      construction form to the language is a change to `SPEC.md`, so it is left
-      to stage 3 rather than invented here.
-
-### Two language gaps stage 2 found
-
-Both are recorded rather than quietly fixed, because each is a change to the
-language and not to the implementation.
-
-1. **No index assignment.** `a[i] = v` does not parse. The interpreter can
-   already evaluate an index read, so the work is a parser and lowering change
-   plus type rules in stage 3.
-2. **No list of a computed length.** A list literal lists its elements. There is
-   no `[0; n]` form, so a list sized at run time cannot be built.
-
-Stage 3 should close both, and should then add `bench/vortex/sieve.vx` and check
-its checksum against the baselines before recording any time.
+- [x] The whole `examples/` set parses and runs on both engines, with identical
+      output. Checked by comparing the two engines on every example, not by
+      asserting one of them.
+- [x] The stage 2 and 3 test suites run against the VM unchanged, selected by
+      `VORTEX_ENGINE=vm cargo test --workspace`. 189 passing on each engine. No
+      expectation was edited to accommodate the VM, and the second run was shown
+      to really exercise the VM by breaking VM arithmetic and watching 15 tests
+      fail while the tree suite still passed.
+- [x] A disassembly command prints the bytecode for a function:
+      `cargo run --release --example disasm -- <file.vx> [--fn <name>]`.
+- [x] `bench/run.sh` reports a tree interpreter row and a VM row for the same
+      workload, five repeats, raw output committed at
+      `bench/results/stage4-vm.txt`. Both rows print the same checksum as the C
+      and Rust baselines.
+- [x] `SPEC.md` section 10.1 resolved in writing, with the measurement that
+      decided it.
+- [x] Every optimisation is either published with before and after numbers or
+      was never made. **No optimisation shipped.** The measurement that would
+      have justified one, a VM faster than the tree interpreter, did not happen,
+      so the honest result is the slowdown recorded in `BENCHMARKS.md`.
 
 ## Stage 3: types and diagnostics
 

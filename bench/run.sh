@@ -134,34 +134,42 @@ run_one() {
     printf '%-10s %-22s %s\n' "$_label" "$_best ms" "$_checksum"
 }
 
-# Runs the Vortex workload REPEATS times and reports the fastest, but only when
-# its checksum equals the baseline on every run. A row is only ever filled in by
-# work that actually ran and matched.
+# Runs the Vortex workload on one engine REPEATS times and reports the
+# fastest, but only when its checksum equals the baseline on every run. A row is
+# only ever filled in by work that actually ran and matched.
+#
+# $1 is the engine flag, empty for the tree interpreter and --vm for the
+# virtual machine. The VM is reported whatever it does, so a slower VM shows up
+# in the table rather than being left out.
 run_vortex() {
-    _want=$1
+    _flag=$1
+    _label=$2
+    _want=$3
     _best=""
     _seen=""
     _i=0
     while [ "$_i" -lt "$REPEATS" ]; do
         _start=$(date +%s%N)
-        _out=$("$VORTEX_BIN" "$ROOT/bench/vortex/sieve.vx" 2>/dev/null) || {
-            printf '%-10s %-22s %s' "Vortex" "error" "the workload exited non-zero"
+        # shellcheck disable=SC2086
+        _out=$("$VORTEX_BIN" "$ROOT/bench/vortex/sieve.vx" $_flag 2>/dev/null) || {
+            printf '%-20s %-10s %s' "$_label" "error" "the workload exited non-zero"
             return 0
         }
         _end=$(date +%s%N)
         _elapsed=$(awk -v a="$_start" -v b="$_end" 'BEGIN { printf "%d", (b - a) / 1000000 }')
 
         _checksum=$(printf '%s\n' "$_out" | sed -n 's/^checksum \([0-9][0-9]*\).*/\1/p')
+        _float=$(printf '%s\n' "$_out" | sed -n 's/^checksum [0-9][0-9]* \(.*\)/\1/p')
         if [ -z "$_checksum" ]; then
-            printf '%-10s %-22s %s' "Vortex" "error" "the workload printed no checksum"
+            printf '%-20s %-10s %s' "$_label" "error" "the workload printed no checksum"
             return 0
         fi
         if [ "$_checksum" != "$_want" ]; then
-            printf '%-10s %-22s %s' "Vortex" "n/a" \
+            printf '%-20s %-10s %s' "$_label" "n/a" \
                 "checksum $_checksum does not match the baseline $_want"
             return 0
         fi
-        _seen="checksum $_checksum"
+        _seen="checksum $_checksum $_float"
 
         if [ -z "$_best" ]; then
             _best=$_elapsed
@@ -171,7 +179,7 @@ run_vortex() {
         _i=$((_i + 1))
     done
 
-    printf '%-10s %-22s %s' "Vortex" "$_best ms" "$_seen"
+    printf '%-20s %-10s %s' "$_label" "$_best ms" "$_seen"
 }
 
 echo
@@ -181,8 +189,8 @@ echo
 echo "Repeats per workload: $REPEATS (the fastest run is reported)"
 echo "Build directory:      $BUILD"
 echo
-printf '%-10s %-22s %s\n' "LANGUAGE" "WALL CLOCK" "CHECKSUM"
-printf '%-10s %-22s %s\n' "--------" "----------" "--------"
+printf '%-20s %-10s %s\n' "LANGUAGE" "WALL CLOCK" "CHECKSUM"
+printf '%-20s %-10s %s\n' "--------" "----------" "--------"
 
 run_one "C" "$BUILD/c_sieve" "$C_STATUS"
 run_one "Rust" "$BUILD/rust_bench" "$RUST_STATUS"
@@ -204,12 +212,22 @@ if [ "$VORTEX_STATUS" = "built" ]; then
         VORTEX_ROW=$(printf '%-10s %-22s %s' "Vortex" "n/a" \
             "checksum $VORTEX_CHECKSUM does not match the baseline $BASELINE_CHECKSUM")
     else
-        VORTEX_ROW=$(run_vortex "$BASELINE_CHECKSUM")
+        VORTEX_ROW=$(run_vortex "" "Vortex tree" "$BASELINE_CHECKSUM")
     fi
 else
-    VORTEX_ROW=$(printf '%-10s %-22s %s' "Vortex" "n/a" "$VORTEX_STATUS")
+    VORTEX_ROW=$(printf '%-20s %-10s %s' "Vortex tree" "n/a" "$VORTEX_STATUS")
 fi
 printf '%s\n' "$VORTEX_ROW"
+
+# The virtual machine, reported whatever it does. A slower VM is a fact about
+# this implementation and not a reason to leave the row out.
+VM_ROW=""
+if [ "$VORTEX_STATUS" = "built" ] && [ -n "$BASELINE_CHECKSUM" ]; then
+    VM_ROW=$(run_vortex "--vm" "Vortex VM" "$BASELINE_CHECKSUM")
+else
+    VM_ROW=$(printf '%-20s %-10s %s' "Vortex VM" "n/a" "the Vortex runner did not build")
+fi
+printf '%s\n' "$VM_ROW"
 
 echo
 echo "Toolchain used for this run"

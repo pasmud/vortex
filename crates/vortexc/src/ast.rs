@@ -241,6 +241,11 @@ pub enum ExprKind {
     Try(Box<Expr>),
     /// `[a, b, c]`
     Array(Vec<Expr>),
+    /// `e as T`, an explicit conversion.
+    ///
+    /// `SPEC.md` section 6.1 rule 4 requires this to be written out, because
+    /// there is no implicit conversion between `Int` and `Float`.
+    Cast(Box<Expr>, TypeExpr),
     /// `[value; count]`, a list of `count` copies of `value`.
     ///
     /// This is how a list whose size is only known at run time is built, which

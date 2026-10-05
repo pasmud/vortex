@@ -376,6 +376,33 @@ impl<'a> Vm<'a> {
                     Value::list(values)
                 })
             }
+            // `e as T`. The checker has already refused every pair that is not
+            // legal, so this only performs the conversions.
+            ir::Expr::Cast { value, to, pos } => {
+                let v = self.eval(value, frame)?.value();
+                let name = to.name();
+                let result = match (&name[..], &v) {
+                    ("Float", Value::Int(n)) => Value::Float(*n as f64),
+                    ("Int", Value::Float(f)) => Value::Int(*f as i64),
+                    ("Char", Value::Int(n)) => {
+                        match u32::try_from(*n).ok().and_then(char::from_u32) {
+                            Some(c) => Value::Char(c),
+                            None => {
+                                return Err(RuntimeError::BadOperands {
+                                    op: "as Char".to_string(),
+                                    lhs: format!("{} is not a Unicode scalar value", n),
+                                    rhs: String::new(),
+                                    pos: *pos,
+                                })
+                            }
+                        }
+                    }
+                    ("Int", Value::Char(c)) => Value::Int(*c as i64),
+                    _ => v,
+                };
+                Eval::Value(result)
+            }
+
             // `[value; count]` builds a list whose length is known only at run
             // time, which is what the benchmark workload needs.
             ir::Expr::Repeat { value, count, pos } => {

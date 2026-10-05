@@ -491,6 +491,35 @@ impl<'a> Checker<'a> {
                 }
             }
 
+            // `e as T`. Section 6.1 rule 4 says the conversion must be written
+            // out, so the checker decides which pairs are legal and the
+            // executor only has to perform the ones that get through.
+            ir::Expr::Cast { value, to, pos } => {
+                let from = self.expr(value, env)?;
+                let target = self.resolve_type(to.name())?;
+                if from == target {
+                    return Ok(from);
+                }
+                let ok = matches!(
+                    (&from, &target),
+                    (Type::Int, Type::Float)
+                        | (Type::Float, Type::Int)
+                        | (Type::Int, Type::Char)
+                        | (Type::Char, Type::Int)
+                );
+                if !ok {
+                    return Err(TypeError {
+                        message: format!(
+                            "cannot cast `{}` to `{}`; the only casts are between `Int`, `Float` and `Char`",
+                            self.name_of(&from),
+                            self.name_of(&target)
+                        ),
+                        pos: *pos,
+                    });
+                }
+                target
+            }
+
             // `[value; count]` is a list of the repeated value's type. The count
             // may be any Int, and every element is one type.
             ir::Expr::Repeat { value, count, .. } => {

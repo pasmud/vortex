@@ -5,31 +5,96 @@
 //! acceptance criteria in `ROADMAP.md`: every construct `SPEC.md` section 8
 //! lists is executed, and the negative cases name the line and the column.
 
-use vortexc::{run_source, RuntimeError, Value};
+use vortexc::{run_on_vm, run_source, RuntimeError, Value};
 
 /// Runs a program and returns what it printed.
-fn run(src: &str) -> String {
-    let mut out = Vec::new();
-    match run_source(src, &mut out) {
-        Ok(_) => String::from_utf8(out).expect("output should be valid UTF-8"),
-        Err(e) => panic!("program failed: {}", e),
+/// Which execution engine a test runs against.
+///
+/// The suite runs twice, once per engine, so the VM is checked against the same
+/// expectations as the tree interpreter rather than a weaker set written for it.
+/// An engine that disagrees shows up as a failing test, not an edited
+/// expectation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    Tree,
+    Vm,
+}
+
+/// The engine the suite tests, chosen by the VORTEX_ENGINE environment
+/// variable.
+///
+/// Setting it to vm makes this file the VM suite. The test command runs it once
+/// per engine, so the same expectations are checked against both without being
+/// edited. An engine that disagrees fails a test rather than changing what the
+/// test says.
+static ENGINE: std::sync::LazyLock<Engine> =
+    std::sync::LazyLock::new(|| match std::env::var("VORTEX_ENGINE").as_deref() {
+        Ok("vm") => Engine::Vm,
+        _ => Engine::Tree,
+    });
+
+/// The engine this run of the suite is testing, for a failure message.
+#[allow(dead_code)]
+fn engine() -> Engine {
+    *ENGINE
+}
+
+/// What running a program produced.
+pub struct Ran {
+    pub out: String,
+    pub value: vortexc::Value,
+}
+
+impl Ran {
+    /// The output a test compares against.
+    pub fn output(&self) -> &str {
+        &self.out
     }
+
+    /// The value `main` returned.
+    pub fn value(self) -> vortexc::Value {
+        self.value
+    }
+}
+
+/// Runs a program on one engine, capturing its output and its return value.
+fn run_on(engine: Engine, src: &str) -> Ran {
+    let mut out = Vec::new();
+    let result = match engine {
+        Engine::Tree => run_source(src, &mut out),
+        Engine::Vm => run_on_vm(src, &mut out),
+    };
+    match result {
+        Ok(value) => Ran {
+            out: String::from_utf8(out).expect("output should be valid UTF-8"),
+            value,
+        },
+        Err(e) => panic!("program failed on {:?}: {}", engine, e),
+    }
+}
+
+fn run(src: &str) -> String {
+    run_on(*ENGINE, src).output().to_string()
 }
 
 /// Runs a program and returns the value `main` returned.
 fn returned(src: &str) -> Value {
-    let mut out = Vec::new();
-    match run_source(src, &mut out) {
-        Ok(v) => v,
-        Err(e) => panic!("program failed: {}", e),
-    }
+    run_on(*ENGINE, src).value()
 }
 
 /// Runs a program that is expected to fail.
 fn fails(src: &str) -> String {
+    let engine = *ENGINE;
     let mut out = Vec::new();
-    match run_source(src, &mut out) {
-        Ok(_) => panic!("expected a runtime error, but the program succeeded"),
+    let result = match engine {
+        Engine::Tree => run_source(src, &mut out),
+        Engine::Vm => run_on_vm(src, &mut out),
+    };
+    match result {
+        Ok(_) => panic!(
+            "expected a runtime error on {:?}, but the program succeeded",
+            engine
+        ),
         Err(e) => e.to_string(),
     }
 }

@@ -1,26 +1,31 @@
 #!/bin/sh
 # Guards the performance claim in BENCHMARKS.md.
 #
-# Three things are checked, and each matters:
+# The claim has to come from a committed transcript, not from a run anyone
+# remembers. This checks that in four layers.
 #
 # 1. While no comparable Vortex result is recorded, BENCHMARKS.md must still say
-#    so. A result may only be added by removing that marker deliberately,
-#    together with the machine and the raw output, so the two cannot drift
-#    apart.
+#    so, and must carry the reasoning for the empty row rather than asserting it.
 #
-# 2. While the Vortex row is empty, bench/run.sh must explain why. A row that
-#    says only "n/a" hides whether the number is missing on purpose or was
-#    forgotten.
+# 2. Every wall clock number in BENCHMARKS.md must appear in the committed raw
+#    output for that row, and every number the transcript records must be the one
+#    the table quotes.
 #
-# 3. While no result is recorded, the file must carry the measurements that led
-#    to that decision, so the decision is auditable rather than asserted.
+#    This is the check that matters most, and it exists because the numbers had
+#    drifted: the table was written by hand from one run while the committed
+#    transcript was from another, and all four documented numbers were the faster
+#    ones. Comparing a committed document against a committed artifact is not
+#    sensitive to timing jitter, because it compares two fixed things, and it
+#    catches both a transcription error and a stale transcript.
 #
-# When a result is recorded, the machine specification and the raw harness
-# output must be committed with it.
+# 3. Every row of the table must be present and the matrix half of the checksum
+#    must be recorded, so a row cannot quietly claim less than it measured.
+#
+# 4. When a result is recorded, the machine specification and the committed raw
+#    output must both be present.
 #
 # This script is not weakened to make a run pass. If it fails, the claim in
-# BENCHMARKS.md and the behaviour of the harness disagree, and one of them is
-# wrong.
+# BENCHMARKS.md and the artifact meant to prove it disagree, and one is wrong.
 
 set -eu
 
@@ -36,24 +41,17 @@ fail() {
 [ -f "$BENCH" ] || fail "BENCHMARKS.md is missing"
 [ -f "$RUN" ] || fail "bench/run.sh is missing"
 
-# BENCHMARKS.md is wrapped for reading, so the text is flattened before it is
-# searched. Searching the wrapped file would miss a phrase split across lines.
+# Both documents are wrapped for reading, so their text is flattened before it
+# is searched. Searching the wrapped file would miss a phrase split across lines.
 FLAT=$(tr '\n' ' ' < "$BENCH" | tr -s ' ')
 
 if printf '%s' "$FLAT" | grep -q '## NO COMPARABLE VORTEX RESULT YET'; then
-    NO_RESULT=yes
-else
-    NO_RESULT=no
-fi
-
-if [ "$NO_RESULT" = "yes" ]; then
-    # The harness has to carry a real reason, not a bare placeholder.
+    # --- no result recorded yet -------------------------------------------
     if ! grep -q 'VORTEX_STATUS="no comparable time:' "$RUN"; then
         fail "bench/run.sh no longer says why the Vortex row is empty, while \
 BENCHMARKS.md still says no comparable result was recorded"
     fi
 
-    # The reasoning for the empty row must be present, not merely asserted.
     for phrase in "\`as\` cast" "too slow in a tree interpreter"; do
         case "$FLAT" in
             *"$phrase"*) ;;
@@ -61,17 +59,6 @@ BENCHMARKS.md still says no comparable result was recorded"
         esac
     done
 
-    # The timings must actually be there. Checking only for the limit passed
-    # even when a measurement had been deleted from the table, so each row is
-    # matched whole: the limit and its measured milliseconds.
-    for row in "10000 | 5736396 | 3676 ms" "20000 | 21171191 | 15862 ms"; do
-        case "$FLAT" in
-            *"$row"*) ;;
-            *) fail "BENCHMARKS.md is missing the measurement: $row" ;;
-        esac
-    done
-
-    # A Vortex workload must exist for the decision to be about one.
     [ -f "$ROOT/bench/vortex/sieve.vx" ] \
         || fail "BENCHMARKS.md says the Vortex sieve is written, but \
 bench/vortex/sieve.vx is missing"
@@ -82,45 +69,85 @@ bench/vortex/sieve.vx is missing"
     exit 0
 fi
 
-# A result is recorded, so the evidence has to be here with it.
-echo "BENCHMARKS.md records a Vortex result. Checking the evidence is present."
+# --- a result is recorded --------------------------------------------------
 
+echo "BENCHMARKS.md records a Vortex result. Checking it against the transcript."
+
+RAW="$ROOT/bench/results/stage4-vm.txt"
+[ -f "$RAW" ] || fail "bench/results/stage4-vm.txt is missing"
+
+RAWFLAT=$(tr '\n' ' ' < "$RAW" | tr -s ' ')
+
+# (4) The machine specification has to be there.
 grep -q '^## Machine specification' "$BENCH" \
     || fail "a result is recorded but the machine specification is missing"
 
-if [ ! -d "$ROOT/bench/results" ]; then
-    fail "a result is recorded but bench/results does not exist, so the raw \
-harness output is not committed"
-fi
+# (3) Every row must be present. Rows are matched by name rather than by number,
+# because a timing that moves by a millisecond between runs is not a falsified
+# claim, while a deleted row is a measurement that disappeared.
+# The table's cells sit on their own lines once the text is split on the pipe,
+# so the row name and its number end up separated by a newline. The cells are
+# joined back together so a row is one searchable line again.
+ROWS=$(printf '%s' "$FLAT" | tr '|' '\n' | sed 's/^ *//; s/ *$//' | tr '\n' ' ')
 
-# The recorded times must be quoted whole, the same way the no-result branch
-# matches its measurements, so deleting a number makes this fail.
-for row in "| C | 18 ms | 1179908154 |" \
-           "| Rust | 17 ms | 1179908154 |" \
-           "| Vortex, tree interpreter | 2780 ms | 1179908154 |"; do
-    case "$FLAT" in
-        *"$row"*) ;;
-        *) fail "BENCHMARKS.md is missing the recorded result row: $row" ;;
+for name in "C" "Rust" "Vortex, tree interpreter" "Vortex, bytecode VM"; do
+    case "$ROWS" in
+        *" $name "*) ;;
+        *) fail "BENCHMARKS.md is missing the $name row" ;;
     esac
 done
 
-# The raw output has to be committed, and it has to show all three rows with the
-# same checksum, which is what makes the comparison a comparison.
-RAW="$ROOT/bench/results/stage3-tree-interpreter.txt"
-[ -f "$RAW" ] || fail "bench/results/stage3-tree-interpreter.txt is missing"
-
-RAWFLAT=$(tr '\n' ' ' < "$RAW" | tr -s ' ')
-case "$RAWFLAT" in
-    *"checksum 1179908154"*) ;;
-    *) fail "the committed harness output does not carry the baseline checksum" ;;
+case "$FLAT" in
+    *"3314.003906"*) ;;
+    *) fail "BENCHMARKS.md does not record the matrix half of the checksum" ;;
 esac
-for label in "C " "Rust " "Vortex "; do
-    case "$RAWFLAT" in
-        *"$label"*) ;;
-        *) fail "the committed harness output has no $label row" ;;
-    esac
-done
 
-echo "The machine specification is present, the raw output is committed, and"
-echo "all three rows carry the same checksum."
+case "$RAWFLAT" in
+    *"checksum 1179908154 3314.003906"*) ;;
+    *) fail "the committed transcript does not carry the baseline checksum" ;;
+esac
+
+# (2) The check that matters. Each documented number must be in the transcript,
+# and each transcript number must be the one the table quotes, so the table
+# cannot drift from the artifact that is supposed to prove it.
+#
+# $1 is the transcript label, $2 is the document row name.
+check_row_numbers() {
+    _raw=$1
+    _doc=$2
+
+    # What the document quotes on its row. The row label is turned into a
+    # pattern so the name may contain a comma.
+    _pat=$(printf '%s' "$_doc" | sed 's/,/\\,/g')
+    _doc_ms=$(printf '%s' "$ROWS" | grep -o "\($_pat\) [0-9][0-9]* ms" | head -n 1)
+
+    case "$_doc_ms" in
+        "") fail "BENCHMARKS.md's '$_doc' row quotes no wall clock number" ;;
+    esac
+
+    # What the transcript recorded.
+    _raw_ms=$(printf '%s' "$RAWFLAT" | sed -n "s/.*$_raw[^0-9]*\([0-9][0-9]* ms\).*/\1/p")
+
+    case "$_raw_ms" in
+        "") fail "bench/results/stage4-vm.txt has no '$_raw' row with a time" ;;
+    esac
+
+    case "$_doc_ms" in
+        *"$_raw_ms"*) ;;
+        *)
+            fail "BENCHMARKS.md quotes '$_doc_ms' but bench/results/stage4-vm.txt \
+records '$_raw_ms'. The table and the transcript disagree; write the table \
+from the transcript rather than from memory."
+            ;;
+    esac
+}
+
+check_row_numbers "C" "C"
+check_row_numbers "Rust" "Rust"
+check_row_numbers "Vortex tree" "Vortex, tree interpreter"
+check_row_numbers "Vortex VM" "Vortex, bytecode VM"
+
+echo "The machine specification is present, every row is present, the matrix"
+echo "half of the checksum is recorded, and every wall clock number the"
+echo "document quotes is the number the committed transcript records."
 echo "The check is satisfied."
