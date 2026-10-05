@@ -333,4 +333,75 @@ if [ -f "$ST7" ] && [ -f "$T7" ]; then
     echo "8 transcript records the full checksum on every path, and BENCHMARKS.md"
     echo "carries the compiled row at the full workload without the sieve-only label."
 fi
+# --- STAGE9.md --------------------------------------------------------------
+#
+# Stage 9 is a before-and-after document, so it is checked against two
+# transcripts rather than one. Every run it quotes has to be recorded by the
+# transcript for that half of the comparison. The shape is otherwise the same as
+# the STAGE7 check.
+ST9="$ROOT/STAGE9.md"
+T9A="$ROOT/bench/results/stage9-before.txt"
+T9B="$ROOT/bench/results/stage9-after.txt"
+
+[ -f "$ST9" ] || fail "STAGE9.md is missing"
+[ -f "$T9A" ] || fail "bench/results/stage9-before.txt is missing"
+[ -f "$T9B" ] || fail "bench/results/stage9-after.txt is missing"
+
+S9FLAT=$(tr '\n' ' ' < "$ST9" | tr ',' ' ' | tr -s ' ')
+T9AFLAT=$(tr '\n' ' ' < "$T9A" | tr ',' ' ' | tr -s ' ')
+T9BFLAT=$(tr '\n' ' ' < "$T9B" | tr ',' ' ' | tr -s ' ')
+
+# The runs quoted in the before-and-after table, before first.
+for row in "55 46 44 43 52" "3335 3262 3261 3268 3256" "4957 5015 4996 4978 4983"; do
+    case "$S9FLAT" in
+        *"$row"*) ;;
+        *) fail "STAGE9.md does not quote the before run '$row'" ;;
+    esac
+    case "$T9AFLAT" in
+        *"$row"*) ;;
+        *) fail "STAGE9.md quotes the before run '$row' and stage9-before.txt does not record it" ;;
+    esac
+done
+
+# And after.
+for row in "48 50 55 51 48" "3254 3268 3293 3259 3285" "4986 5019 4987 4995 5020"; do
+    case "$S9FLAT" in
+        *"$row"*) ;;
+        *) fail "STAGE9.md does not quote the after run '$row'" ;;
+    esac
+    case "$T9BFLAT" in
+        *"$row"*) ;;
+        *) fail "STAGE9.md quotes the after run '$row' and stage9-after.txt does not record it" ;;
+    esac
+done
+
+# The comparison is against the spread committed at stage 8, so that spread has
+# to be quoted too.
+case "$S9FLAT" in
+    *"42 to 53 ms"*) ;;
+    *) fail "STAGE9.md does not compare against the stage 8 spread of 42 to 53 ms" ;;
+esac
+case "$RAWFLAT" in
+    *"42 53 50 48 49"*) ;;
+    *) fail "the stage 8 transcript does not record the run 42 53 50 48 49 the comparison depends on" ;;
+esac
+
+# Each transcript has to print five runs for the compiled path, so a single
+# number cannot stand in for a spread.
+for pair in "before:$T9A" "after:$T9B"; do
+    label=${pair%%:*}
+    file=${pair#*:}
+    craw=$(grep '^Vortex C' "$file" | head -n 1)
+    case "$craw" in
+        "") fail "the stage 9 $label transcript has no Vortex C row" ;;
+    esac
+    runs=$(printf '%s' "$craw" | grep -o '[0-9][0-9]*' | grep -c .)
+    [ "$runs" -ge 5 ] ||
+        fail "the stage 9 $label transcript prints $runs runs for the compiled path, fewer than five"
+done
+
+echo "STAGE9.md's figures appear in bench/results/stage9-before.txt and"
+echo "bench/results/stage9-after.txt, and the stage 8 spread it compares against"
+echo "is recorded in bench/results/stage8-compiled-full.txt."
+
 echo "The check is satisfied."

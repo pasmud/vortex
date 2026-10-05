@@ -1,0 +1,24 @@
+Vortex execution path measurement, stage 8
+==========================================
+
+Repeats:        5
+Workload:       /workspace/repo/bench/vortex/sieve.vx
+Compiled C:     cc (Debian 12.2.0-14+deb12u1) 12.2.0
+Rust:           rustc 1.99.0 (b940084d7 2026-09-28)
+Machine:        Linux 6.18.35 x86_64 on Intel(R) Core(TM) i5-8500T CPU @ 2.10GHz
+
+PATH          RUN TIMES IN ms, THEN CHECKSUM
+-------------  ------------------------------------------------
+C             21 19 28 17 20 | checksum 1179908154 3314.003906
+Rust          19 26 17 17 18 | checksum 1179908154 3314.003906
+Vortex C      48 50 55 51 48 | 1179908154 3314.003906
+Vortex tree   3254 3268 3293 3259 3285 | checksum 1179908154 3314.003906
+Vortex VM     4986 5019 4987 4995 5020 | checksum 1179908154 3314.003906
+
+The checksums are printed so a reader can see whether the paths agree,
+rather than being asked to take it.
+
+All four Vortex paths run the whole workload and print the same checksum,
+the sieve and the matrix together. The Vortex C row was sieve only until
+stage 8 fixed the float path; FLOAT-DEFECT.md records the four defects
+that had to be fixed before it could measure the same work as the others.
