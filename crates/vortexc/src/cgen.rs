@@ -15,6 +15,7 @@
 //! returns [`Unsupported`] naming the construct, so the next function that
 //! cannot be compiled is a known limit rather than a broken translation.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use crate::ast::{self, Spanned};
@@ -68,7 +69,19 @@ fn c_type(t: &ast::TypeExpr) -> Option<&'static str> {
 ///
 /// `body` is the same body the interpreters run, so the three paths execute the
 /// same program rather than three similar ones.
-pub fn emit_function(f: &Spanned<ast::FnDecl>) -> Result<String, Unsupported> {
+/// Emits one function with no knowledge of the rest of the program.
+///
+/// A call inside it is then declared Int, because nothing says what the callee
+/// returns. Use this only when testing a single function in isolation.
+pub fn emit_function_alone(f: &Spanned<ast::FnDecl>) -> Result<String, Unsupported> {
+    let signatures: Signatures = HashMap::new();
+    emit_function(f, &signatures)
+}
+
+pub fn emit_function(
+    f: &Spanned<ast::FnDecl>,
+    signatures: &Signatures,
+) -> Result<String, Unsupported> {
     let ret = match &f.node.ret {
         None => "void",
         Some(t) => c_type(t).ok_or_else(|| {
@@ -99,7 +112,8 @@ pub fn emit_function(f: &Spanned<ast::FnDecl>) -> Result<String, Unsupported> {
         param_name(&f.node.name),
         param_list
     );
-    emit_block(&mut out, &f.node.body, 1, ret)?;
+    let mut lists = HashMap::new();
+    emit_block(&mut out, &f.node.body, 1, ret, &mut lists, &signatures)?;
     // A body that falls off the end returns the zero value, which is what the
     // interpreters do too.
     let zero = match ret {
@@ -162,9 +176,11 @@ fn emit_block(
     b: &ast::Block,
     depth: usize,
     ret: &str,
+    lists: &mut HashMap<String, &'static str>,
+    signatures: &Signatures,
 ) -> Result<(), Unsupported> {
     for stmt in &b.stmts {
-        emit_stmt(out, stmt, depth, ret)?;
+        emit_stmt(out, stmt, depth, ret, lists, signatures)?;
     }
     if let Some(tail) = &b.tail {
         // A body ending in an expression returns it. SPEC.md section 8 makes a
@@ -172,23 +188,81 @@ fn emit_block(
         // it that way, so the emitted C has to as well.
         indent(out, depth);
         if ret == "void" {
-            let _ = writeln!(out, "{}({});", "free_expr_placeholder", emit_expr(tail)?);
+            let _ = writeln!(out, "{}", emit_expr(tail, lists, signatures)?);
         } else {
-            let _ = writeln!(out, "return {};", emit_expr(tail)?);
+            let _ = writeln!(out, "return {};", emit_expr(tail, lists, signatures)?);
         }
     }
     Ok(())
 }
 
-fn emit_stmt(out: &mut String, s: &ast::Stmt, depth: usize, ret: &str) -> Result<(), Unsupported> {
+/// The name suffix for the constructor of a list of this element type.
+fn list_suffix(elem: &str) -> &'static str {
+    match elem {
+        "double" => "f64",
+        "const char *" => "str",
+        _ => "i64",
+    }
+}
+
+/// The C element type a list initialiser produces, if it produces a list.
+///
+/// The rule matches the one the lowering pass uses: a literal takes the type of
+/// its first element, which is sound because the checker rejects a mixed list,
+/// and a repeat takes the type of the value it repeats.
+fn list_element_type(e: &ast::Expr) -> Option<&'static str> {
+    match &e.kind {
+        ast::ExprKind::Array(items) => items.first().and_then(value_c_type),
+        ast::ExprKind::Repeat { value, .. } => value_c_type(value),
+        ast::ExprKind::Cast(_, t) => c_type(t),
+        _ => None,
+    }
+}
+
+/// The element type a base expression produces, when the base is itself a list
+/// expression rather than a name.
+fn list_element_type_index(base: &ast::Expr, _other: &ast::ExprKind) -> Option<&'static str> {
+    list_element_type(base)
+}
+
+/// The C type of a scalar value expression.
+fn value_c_type(e: &ast::Expr) -> Option<&'static str> {
+    match &e.kind {
+        ast::ExprKind::Int(_) => Some("int64_t"),
+        ast::ExprKind::Float(_) => Some("double"),
+        ast::ExprKind::Str(_) => Some("const char *"),
+        ast::ExprKind::Cast(_, t) => c_type(t),
+        _ => None,
+    }
+}
+
+fn emit_stmt(
+    out: &mut String,
+    s: &ast::Stmt,
+    depth: usize,
+    ret: &str,
+    lists: &mut HashMap<String, &'static str>,
+    signatures: &Signatures,
+) -> Result<(), Unsupported> {
     match &s.kind {
         ast::StmtKind::Let { name, init, .. } => {
-            let c = expr_type_of(init);
+            let c = expr_type_of(init, signatures);
+            // A list binding records its element type, so an index into this
+            // name reads through the right cast later in the same walk.
+            if let Some(elem) = list_element_type(init) {
+                lists.insert(param_name(name), elem);
+            }
             indent(out, depth);
-            let _ = writeln!(out, "{} {} = {};", c, param_name(name), emit_expr(init)?);
+            let _ = writeln!(
+                out,
+                "{} {} = {};",
+                c,
+                param_name(name),
+                emit_expr(init, lists, signatures)?
+            );
         }
         ast::StmtKind::Return(e) => {
-            let value = emit_expr(e)?;
+            let value = emit_expr(e, lists, signatures)?;
             if ret == "void" {
                 indent(out, depth);
                 let _ = writeln!(out, "return;");
@@ -203,17 +277,33 @@ fn emit_stmt(out: &mut String, s: &ast::Stmt, depth: usize, ret: &str) -> Result
             ast::ExprKind::Assign { name, index, value } => match index {
                 Some((base, i)) => {
                     indent(out, depth);
+                    // The element type comes from the name the base is bound
+                    // to, recorded when that declaration was emitted.
+                    let elem = match &base.kind {
+                        ast::ExprKind::Ident(n) => {
+                            lists.get(&param_name(n)).copied().unwrap_or("int64_t")
+                        }
+                        other => list_element_type_index(base, other)
+                            .or_else(|| list_element_type(base))
+                            .unwrap_or("int64_t"),
+                    };
                     let _ = writeln!(
                         out,
-                        "(({b})).items[({i})] = ({v});",
-                        b = emit_expr(base)?,
-                        i = emit_expr(i)?,
-                        v = emit_expr(value)?
+                        "((({c} *)({b}).items)[({i})]) = {v};",
+                        c = elem,
+                        b = emit_expr(base, lists, signatures)?,
+                        i = emit_expr(i, lists, signatures)?,
+                        v = emit_expr(value, lists, signatures)?
                     );
                 }
                 None => {
                     indent(out, depth);
-                    let _ = writeln!(out, "{} = {};", param_name(name), emit_expr(value)?);
+                    let _ = writeln!(
+                        out,
+                        "{} = {};",
+                        param_name(name),
+                        emit_expr(value, lists, signatures)?
+                    );
                 }
             },
             // An if used as a statement. This is the shape the sieve and
@@ -225,14 +315,14 @@ fn emit_stmt(out: &mut String, s: &ast::Stmt, depth: usize, ret: &str) -> Result
                 otherwise,
             } => {
                 indent(out, depth);
-                let _ = writeln!(out, "if ({}) {{", emit_expr(cond)?);
-                emit_block(out, then, depth + 1, ret)?;
+                let _ = writeln!(out, "if ({}) {{", emit_expr(cond, lists, signatures)?);
+                emit_block(out, then, depth + 1, ret, lists, signatures)?;
                 match otherwise {
                     Some(else_box) => {
                         indent(out, depth);
                         let _ = writeln!(out, "}} else {{");
                         if let ast::Else::Block(b) = else_box.as_ref() {
-                            emit_block(out, b, depth + 1, ret)?;
+                            emit_block(out, b, depth + 1, ret, lists, signatures)?;
                         } else {
                             return Err(Unsupported::Construct(
                                 "an else if chain in a statement".to_string(),
@@ -252,10 +342,10 @@ fn emit_stmt(out: &mut String, s: &ast::Stmt, depth: usize, ret: &str) -> Result
             // which for a call means the call runs.
             ast::ExprKind::Call { .. } => {
                 indent(out, depth);
-                let _ = writeln!(out, "{};", emit_expr(e)?);
+                let _ = writeln!(out, "{};", emit_expr(e, lists, signatures)?);
             }
             _ => {
-                let _ = emit_expr(e)?;
+                let _ = emit_expr(e, lists, signatures)?;
             }
         },
         ast::StmtKind::Break => {
@@ -271,14 +361,14 @@ fn emit_stmt(out: &mut String, s: &ast::Stmt, depth: usize, ret: &str) -> Result
         // require before it could be handled more generally.
         ast::StmtKind::Block(inner) => {
             let _ = writeln!(out, "{{");
-            emit_block(out, inner, depth + 1, ret)?;
+            emit_block(out, inner, depth + 1, ret, lists, signatures)?;
             indent(out, depth);
             let _ = writeln!(out, "}}");
         }
         ast::StmtKind::While { cond, body, .. } => {
             indent(out, depth);
-            let _ = writeln!(out, "while ({}) {{", emit_expr(cond)?);
-            emit_block(out, body, depth + 1, ret)?;
+            let _ = writeln!(out, "while ({}) {{", emit_expr(cond, lists, signatures)?);
+            emit_block(out, body, depth + 1, ret, lists, signatures)?;
             indent(out, depth);
             let _ = writeln!(out, "}}");
         }
@@ -297,22 +387,22 @@ fn emit_stmt(out: &mut String, s: &ast::Stmt, depth: usize, ret: &str) -> Result
                 Unsupported::Construct("an open ended for range".to_string(), s.pos)
             })?;
             let limit = if *inclusive {
-                format!("({} + 1)", emit_expr(end)?)
+                format!("({} + 1)", emit_expr(end, lists, signatures)?)
             } else {
-                emit_expr(end)?
+                emit_expr(end, lists, signatures)?
             };
             indent(out, depth);
             let _ = writeln!(
                 out,
                 "for (int64_t {} = {}; {} {} {}; {}++) {{",
                 param_name(var),
-                emit_expr(start)?,
+                emit_expr(start, lists, signatures)?,
                 param_name(var),
                 "<",
                 limit,
                 param_name(var)
             );
-            emit_block(out, body, depth + 1, ret)?;
+            emit_block(out, body, depth + 1, ret, lists, signatures)?;
             indent(out, depth);
             let _ = writeln!(out, "}}");
         }
@@ -321,7 +411,14 @@ fn emit_stmt(out: &mut String, s: &ast::Stmt, depth: usize, ret: &str) -> Result
 }
 
 /// The C type an expression produces, which decides what a `let` declares.
-fn expr_type_of(e: &ast::Expr) -> &'static str {
+/// The declared return type of each function in the program, by name.
+///
+/// The emitter needs it because a `let` holding a call has to be declared at
+/// what the callee returns. Inferring it from the call expression would always
+/// say Int, which truncated a Float result.
+type Signatures = HashMap<String, &'static str>;
+
+fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> &'static str {
     match &e.kind {
         // A list is a struct with a pointer and a length, not a scalar.
         ast::ExprKind::Array(_) | ast::ExprKind::Repeat { .. } => "CList",
@@ -330,7 +427,7 @@ fn expr_type_of(e: &ast::Expr) -> &'static str {
         ast::ExprKind::Bool(_) => "int",
         ast::ExprKind::Char(_) => "int32_t",
         ast::ExprKind::Str(_) => "const char *",
-        ast::ExprKind::Binary { op, .. } => match op {
+        ast::ExprKind::Binary { op, lhs, rhs } => match op {
             ast::BinOp::Eq
             | ast::BinOp::Ne
             | ast::BinOp::Lt
@@ -339,9 +436,26 @@ fn expr_type_of(e: &ast::Expr) -> &'static str {
             | ast::BinOp::Ge
             | ast::BinOp::And
             | ast::BinOp::Or => "int",
-            _ => "int64_t",
+            // Arithmetic is a Float when either operand is, which is the rule
+            // the checker applies in section 6.1 rule 4 and the tree
+            // interpreter follows. Without it `v * 0.5 + 1.0` declared an
+            // integer and truncated 2.5 to 2.
+            _ => {
+                if expr_type_of(lhs, signatures) == "double"
+                    || expr_type_of(rhs, signatures) == "double"
+                {
+                    "double"
+                } else {
+                    "int64_t"
+                }
+            }
         },
-        ast::ExprKind::Neg(inner) => expr_type_of(inner),
+        ast::ExprKind::Neg(inner) => expr_type_of(inner, signatures),
+        // A call returns whatever the callee declares. Without this a `let`
+        // holding a Float result was declared int64_t and truncated it, which
+        // is why `let m = matrix_work();` lost its fraction before the entry
+        // ever printed it.
+        ast::ExprKind::Call { callee, .. } => signatures.get(callee).copied().unwrap_or("int64_t"),
         _ => "int64_t",
     }
 }
@@ -352,7 +466,11 @@ fn expr_type_of(e: &ast::Expr) -> &'static str {
 /// rather than emitting something that will not compile.
 /// Emits a block as a single C expression.
 ///
-fn emit_expr(e: &ast::Expr) -> Result<String, Unsupported> {
+fn emit_expr(
+    e: &ast::Expr,
+    lists: &HashMap<String, &'static str>,
+    signatures: &Signatures,
+) -> Result<String, Unsupported> {
     Ok(match &e.kind {
         ast::ExprKind::Int(v) => format!("INT64_C({})", v),
         ast::ExprKind::Float(v) => format!("{:.6}", v),
@@ -363,26 +481,28 @@ fn emit_expr(e: &ast::Expr) -> Result<String, Unsupported> {
         ast::ExprKind::Call { callee, args } => {
             let mut parts = Vec::with_capacity(args.len());
             for a in args {
-                parts.push(emit_expr(a)?);
+                parts.push(emit_expr(a, lists, signatures)?);
             }
             format!("{}({})", param_name(callee), parts.join(", "))
         }
-        ast::ExprKind::Paren(inner) => format!("({})", emit_expr(inner)?),
+        ast::ExprKind::Paren(inner) => format!("({})", emit_expr(inner, lists, signatures)?),
         ast::ExprKind::Cast(inner, to) => {
             let target = c_type(to).ok_or_else(|| {
                 Unsupported::Construct(format!("a cast to `{}`", to.name()), e.pos)
             })?;
-            format!("(({})({}))", target, emit_expr(inner)?)
+            format!("(({})({}))", target, emit_expr(inner, lists, signatures)?)
         }
-        ast::ExprKind::Neg(inner) => format!("-({})", emit_expr(inner)?),
-        ast::ExprKind::Not(inner) => format!("!({})", emit_expr(inner)?),
-        ast::ExprKind::Binary { op, lhs, rhs } => emit_binary(op, lhs, rhs, e.pos)?,
+        ast::ExprKind::Neg(inner) => format!("-({})", emit_expr(inner, lists, signatures)?),
+        ast::ExprKind::Not(inner) => format!("!({})", emit_expr(inner, lists, signatures)?),
+        ast::ExprKind::Binary { op, lhs, rhs } => {
+            emit_binary(op, lhs, rhs, e.pos, lists, signatures)?
+        }
         ast::ExprKind::Array(items) => {
             // A list literal is a call to the generated helper, because a C
             // compound literal is not valid where a list is built.
             let mut parts = Vec::with_capacity(items.len());
             for i in items {
-                parts.push(emit_expr(i)?);
+                parts.push(emit_expr(i, lists, signatures)?);
             }
             format!(
                 "vortex_list_new({}u, (int64_t[]){{ {} }})",
@@ -391,15 +511,34 @@ fn emit_expr(e: &ast::Expr) -> Result<String, Unsupported> {
             )
         }
         ast::ExprKind::Repeat { value, count } => {
-            // `[v; n]` is a counted loop into a fixed buffer.
-            let v = emit_expr(value)?;
-            let n = emit_expr(count)?;
-            format!("vortex_list_repeat({n}, {v})", n = n, v = v)
+            // `[v; n]` builds a list of the value's type, so the constructor
+            // is chosen by that type rather than by an index.
+            let elem = expr_type_of(value, signatures);
+            let v = emit_expr(value, lists, signatures)?;
+            let n = emit_expr(count, lists, signatures)?;
+            format!(
+                "vortex_list_repeat_{}({n}, {v})",
+                list_suffix(elem),
+                n = n,
+                v = v
+            )
         }
         ast::ExprKind::Index(base, index) => {
-            let b = emit_expr(base)?;
-            let i = emit_expr(index)?;
-            format!("({b}).items[({i})]", b = b)
+            // The element type comes from the name the base is bound to,
+            // recorded when that declaration was emitted, or from the base
+            // itself when it is a literal or a repeat. It is never inferred
+            // from the index, because a Float list still has an Int index.
+            let elem = match &base.kind {
+                ast::ExprKind::Ident(n) => lists
+                    .get(&param_name(n))
+                    .copied()
+                    .or_else(|| list_element_type(base))
+                    .unwrap_or("int64_t"),
+                _ => list_element_type(base).unwrap_or("int64_t"),
+            };
+            let b = emit_expr(base, lists, signatures)?;
+            let i = emit_expr(index, lists, signatures)?;
+            format!("((({c} *)({b}).items)[({i})])", c = elem, b = b, i = i)
         }
         ast::ExprKind::Field(base, _) => {
             // A field read on a struct the emitter emitted inline.
@@ -438,18 +577,25 @@ fn emit_binary(
     lhs: &ast::Expr,
     rhs: &ast::Expr,
     pos: crate::span::Pos,
+    lists: &HashMap<String, &'static str>,
+    signatures: &Signatures,
 ) -> Result<String, Unsupported> {
     let string_plus = matches!(op, ast::BinOp::Add) && (is_string_expr(lhs) || is_string_expr(rhs));
     if string_plus {
         return Ok(format!(
             "vortex_str_concat({}, {})",
-            emit_expr(lhs)?,
-            emit_expr(rhs)?
+            emit_expr(lhs, lists, signatures)?,
+            emit_expr(rhs, lists, signatures)?
         ));
     }
     let o = c_operator(op)?;
     let _ = pos;
-    Ok(format!("({} {} {})", emit_expr(lhs)?, o, emit_expr(rhs)?))
+    Ok(format!(
+        "({} {} {})",
+        emit_expr(lhs, lists, signatures)?,
+        o,
+        emit_expr(rhs, lists, signatures)?
+    ))
 }
 
 /// Whether an expression is known to be a Vortex string.
@@ -586,6 +732,50 @@ pub fn emit_program(
     let _ = writeln!(out, "    return l;");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out, "");
+    // One constructor per element type. The struct carries a void * because a
+    // Vortex list is not homogeneous in C's type system, so the element type
+    // has to be named at the call site. Declaring them here means a call may
+    // appear before the definition.
+    for (suffix, elem) in [
+        ("i64", "int64_t"),
+        ("f64", "double"),
+        ("str", "const char *"),
+    ] {
+        let _ = writeln!(
+            out,
+            "static CList vortex_list_new_{suffix}(int64_t len, const {elem} *values) {{"
+        );
+        let _ = writeln!(out, "    CList l;");
+        let _ = writeln!(out, "    l.len = len;");
+        let _ = writeln!(
+            out,
+            "    l.items = malloc(sizeof({elem}) * (size_t)(len > 0 ? len : 1));"
+        );
+        let _ = writeln!(
+            out,
+            "    for (int64_t k = 0; k < len; k++) (({elem} *)l.items)[k] = values[k];"
+        );
+        let _ = writeln!(out, "    return l;");
+        let _ = writeln!(out, "}}");
+        let _ = writeln!(out, "");
+        let _ = writeln!(
+            out,
+            "static CList vortex_list_repeat_{suffix}(int64_t len, {elem} value) {{"
+        );
+        let _ = writeln!(out, "    CList l;");
+        let _ = writeln!(out, "    l.len = len;");
+        let _ = writeln!(
+            out,
+            "    l.items = malloc(sizeof({elem}) * (size_t)(len > 0 ? len : 1));"
+        );
+        let _ = writeln!(
+            out,
+            "    for (int64_t k = 0; k < len; k++) (({elem} *)l.items)[k] = value;"
+        );
+        let _ = writeln!(out, "    return l;");
+        let _ = writeln!(out, "}}");
+        let _ = writeln!(out, "");
+    }
     let _ = writeln!(out, "");
     let _ = writeln!(
         out,
@@ -624,9 +814,18 @@ pub fn emit_program(
     // `main` is not among them, because emitting it alongside the C entry point
     // gives the translation unit two `main` definitions and C rejects it.
     let wanted = reachable_from(functions, entry);
+    // The declared return type of every function, so a `let` holding a call
+    // can be declared at what the callee actually returns.
+    let mut signatures: Signatures = HashMap::new();
+    for f in functions {
+        signatures.insert(
+            f.node.name.clone(),
+            f.node.ret.as_ref().and_then(c_type).unwrap_or("int64_t"),
+        );
+    }
     for f in functions {
         if wanted.contains(&f.node.name) {
-            let _ = writeln!(out, "{}", emit_function(f)?);
+            let _ = writeln!(out, "{}", emit_function(f, &signatures)?);
         }
     }
 
@@ -664,14 +863,28 @@ pub fn emit_program(
     // which is how the compiled answer is compared with the two engines. Its
     // return value is printed only when the program produced no output of its
     // own, so a program that prints is not printed twice.
+    // Printed at the type the entry declares. Printing it as a long long
+    // truncated a Float, which is one of the three causes of the compiled path
+    // disagreeing with the two engines on the matrix half.
+    let entry_c = entry_c_type(functions, entry);
     let _ = writeln!(out, "int main(void) {{");
-    let _ = writeln!(out, "    int64_t r = vortex_c_entry();");
+    let _ = writeln!(out, "    {} r = vortex_c_entry();", entry_c);
     // A program that prints its own answer has already written it, so the
     // returned value is written after a marker the harness can strip.
-    let _ = writeln!(
-        out,
-        "    fprintf(stderr, \"vortex_returned %lld\\n\", (long long)r);"
-    );
+    match entry_c {
+        "double" => {
+            let _ = writeln!(out, "    fprintf(stderr, \"vortex_returned %.6f\\n\", r);");
+        }
+        "const char *" => {
+            let _ = writeln!(out, "    fprintf(stderr, \"vortex_returned %s\\n\", r);");
+        }
+        _ => {
+            let _ = writeln!(
+                out,
+                "    fprintf(stderr, \"vortex_returned %lld\\n\", (long long)r);"
+            );
+        }
+    }
     let _ = writeln!(out, "    return 0;\n}}");
     let _ = args;
     Ok(out)

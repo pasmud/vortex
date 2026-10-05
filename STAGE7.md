@@ -72,8 +72,42 @@ times slower on it.
 So: register allocation and constant propagation are where the gap to C is.
 Inlining and escape analysis would not move this measurement much.
 
-## What is not measured
+## What is not measured, and what changed afterwards
 
-The floating point half does not yet agree, so the table compares sieve
-measurements. Until it agrees, the Vortex compiled row stays out of the main
-table in `BENCHMARKS.md`.
+This is the stage 7 position, kept as written. The floating point half did not
+agree then, so the table compared sieve measurements and the compiled row was
+labelled `sieve only` in its own cell.
+
+## The sieve-only label was removed on 2026-10-05
+
+Stage 8 removed the label, and the removal is recorded here because removing a
+caveat is as much a claim as adding one.
+
+**Why the label was accurate when it was written.** The compiled path printed a
+matrix value of 3143 against 3314.003906 from the tree interpreter and the
+bytecode VM. Four defects had to be fixed before it could measure the same work
+as the other rows, and they are recorded in `FLOAT-DEFECT.md`:
+
+- `expr_type_of` returned `int64_t` for arithmetic, truncating `v * 0.5 + 1.0`
+  to 2.
+- The generated entry printed its return with `%lld` whatever it declared,
+  truncating a Float in the harness.
+- `CList` stored `int64_t` elements, so a Float stored into a list truncated.
+  The list element type is now recorded, on `ir::Expr::Index` at lowering time
+  and in a name keyed map the emitter builds as it walks.
+- `expr_type_of` had no case for a call, so `let m = matrix_work();` was
+  emitted as `int64_t m = matrix_work();` and truncated the callee's `double`.
+  This one the four reduction programs could not find. It only appears once a
+  Float crosses a function boundary, which is why the reductions all passed
+  while the full workload did not.
+
+**Why the label is not accurate now.** All three paths print
+`checksum 1179908154 3314.003906` on `bench/vortex/sieve.vx`, measured together
+in one session and committed at `bench/results/stage8-compiled-full.txt`. The
+compiled row in `BENCHMARKS.md` is a full workload row, the guard now requires
+the full checksum on it, and the guard was shown to fail when the checksum was
+removed from that row.
+
+**What the label never meant.** It never meant the compiled path was slow. It
+was about what the row covered, and the number was about the same work for less
+time than the engines manage.

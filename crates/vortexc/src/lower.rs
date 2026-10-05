@@ -107,6 +107,23 @@ struct Binding {
     moved: bool,
     /// Whether this binding holds a scalar, and so survives a move.
     copyable: bool,
+    /// The element type when this binding holds a list, and `None` otherwise.
+    ///
+    /// This is computed when the binding is declared, from the initialiser:
+    /// a list literal or a repeat says what it produces, and anything else is
+    /// not a list. An index expression carries the type with it, so the
+    /// executor never has to recover it from the syntax, where it is not
+    /// present: `a[i]` has an `Int` index whatever `a` holds.
+    element: Option<Element>,
+}
+
+/// The element type of a list, which the executor needs in order to read or
+/// write one element with the right C type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Element {
+    Int,
+    Float,
+    Str,
 }
 
 /// Whether a lowered expression is a scalar, so the binding it feeds survives a
@@ -160,6 +177,40 @@ fn moved_names_in(args: &[ast::Expr]) -> Vec<String> {
 /// `SPEC.md` section 7 says values that are scalars or aggregates of scalars
 /// are `Copy` and are duplicated on assignment rather than moved. Everything
 /// else is an aggregate that owns something, so moving it kills the binding.
+/// The element type a list initialiser produces, if it produces a list.
+///
+/// A literal takes the type of its first element and a repeat takes the type of
+/// the value it repeats. A list literal is checked elsewhere to be uniform, so
+/// the first element decides the whole list.
+fn element_of(e: &ast::Expr) -> Option<Element> {
+    match &e.kind {
+        ast::ExprKind::Array(items) => items.first().and_then(element_of_value),
+        ast::ExprKind::Repeat { value, .. } => element_of_value(value),
+        ast::ExprKind::Cast(_, t) => element_from_name(t.name()),
+        _ => None,
+    }
+}
+
+/// The element type of a value, when it is one a list can hold.
+fn element_of_value(e: &ast::Expr) -> Option<Element> {
+    match &e.kind {
+        ast::ExprKind::Int(_) => Some(Element::Int),
+        ast::ExprKind::Float(_) => Some(Element::Float),
+        ast::ExprKind::Str(_) => Some(Element::Str),
+        ast::ExprKind::Cast(_, t) => element_from_name(t.name()),
+        _ => None,
+    }
+}
+
+fn element_from_name(name: &str) -> Option<Element> {
+    match name {
+        "Int" => Some(Element::Int),
+        "Float" => Some(Element::Float),
+        "Str" => Some(Element::Str),
+        _ => None,
+    }
+}
+
 fn is_scalar_type(ty: &ast::TypeExpr) -> bool {
     matches!(
         ty.name(),
@@ -227,6 +278,25 @@ impl FnState {
         }
     }
 
+    /// The element type a list expression produces, if it is a list.
+    fn element_of_expr(&self, e: &ast::Expr) -> Option<Element> {
+        match &e.kind {
+            ast::ExprKind::Ident(n) => self.element_of(n),
+            ast::ExprKind::Paren(inner) => self.element_of_expr(inner),
+            _ => element_of(e),
+        }
+    }
+
+    /// The element type of the list a name owns, if it owns a list.
+    fn element_of(&self, name: &str) -> Option<Element> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(b) = scope.get(name) {
+                return b.element;
+            }
+        }
+        None
+    }
+
     /// Clears the moved flag on a scalar binding, so reading it makes it live
     /// again. `SPEC.md` section 7 copies a scalar rather than moving it.
     fn clear_moved(&mut self, name: &str) {
@@ -290,6 +360,7 @@ impl Lowerer {
                         mutable: true,
                         moved: false,
                         copyable,
+                        element: element_from_name(p.ty.name()),
                     }
                 } else {
                     Binding {
@@ -297,6 +368,7 @@ impl Lowerer {
                         mutable: false,
                         moved: false,
                         copyable,
+                        element: element_from_name(p.ty.name()),
                     }
                 },
             );
@@ -403,6 +475,9 @@ impl Lowerer {
                             mutable: true,
                             moved: false,
                             copyable,
+                            // The element type comes from the initialiser: a
+                            // list literal or a repeat says what it produces.
+                            element: element_of(init),
                         }
                     } else {
                         Binding {
@@ -410,6 +485,7 @@ impl Lowerer {
                             mutable: false,
                             moved: false,
                             copyable,
+                            element: element_of(init),
                         }
                     },
                 );
@@ -479,6 +555,7 @@ impl Lowerer {
                         mutable: true,
                         moved: false,
                         copyable: true,
+                        element: Some(Element::Int),
                     },
                 );
                 let b = self.block_in_scope(body, st)?;
@@ -935,11 +1012,18 @@ impl Lowerer {
                 }
             }
             ast::ExprKind::Index(base, index) => {
+                // The element type is read from the binding the base names,
+                // because that is where the lowering pass recorded it when it
+                // declared the name. A base that is a literal or a repeat knows
+                // its own element type. Anything else is not a list and the
+                // type is absent rather than guessed at.
+                let element = st.element_of_expr(base);
                 let b = self.expr(base, st)?;
                 let i = self.expr(index, st)?;
                 ir::Expr::Index {
                     base: Box::new(b),
                     index: Box::new(i),
+                    element,
                     pos,
                 }
             }
@@ -1068,6 +1152,7 @@ impl Lowerer {
                             mutable: false,
                             moved: false,
                             copyable: true,
+                            element: Some(Element::Int),
                         },
                     );
                     slots.push(ir::Binding {
@@ -1090,6 +1175,9 @@ impl Lowerer {
                         mutable: false,
                         moved: false,
                         copyable: true,
+                        // A match binding is an Int or a Float payload in
+                        // v0.1, so it is never a list.
+                        element: None,
                     },
                 );
                 ir::Pattern::Binding(ir::Binding {

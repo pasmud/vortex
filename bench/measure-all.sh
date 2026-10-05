@@ -51,14 +51,16 @@ cp "$ROOT/bench/rust/target/release/vortex-bench" "$BUILD/rust_bench" 2>/dev/nul
 # The compiled Vortex binary, built from the same Vortex source as the two
 # engines so the three measure the same program.
 rm -f /tmp/vortex-cgen/*
-"$CRUNNER" "$WORK" sieve_sum >/dev/null
+"$CRUNNER" "$WORK" main >/dev/null
 CBIN="/tmp/vortex-cgen/program"
 [ -x "$CBIN" ] || { echo "the compiled binary was not produced" >&2; exit 1; }
 
 # The sieve sum, so a mismatch is visible rather than assumed.
-CBIN_ANSWER=$("$CBIN" 2>&1 >/dev/null | sed -n 's/^vortex_returned //p')
+# The workload prints its own checksum on stdout and returns 0, so the printed
+# line is what carries the answer. Reading the return value would report 0.
+CBIN_ANSWER=$("$CBIN" 2>/dev/null | sed -n 's/^checksum //p')
 
-echo "Vortex execution path measurement, stage 7"
+echo "Vortex execution path measurement, stage 8"
 echo "=========================================="
 echo
 echo "Repeats:        $REPEATS"
@@ -78,7 +80,7 @@ measure() {
     while [ "$_i" -le "$REPEATS" ]; do
         _start=$(date +%s%N)
         if [ "$1" = "$CBIN" ]; then
-            _out=$("$1" 2>&1 >/dev/null | sed -n 's/^vortex_returned //p')
+            _out=$("$@" 2>/dev/null | sed -n 's/^checksum //p')
         else
             _out=$("$@" 2>/dev/null | head -n 1)
         fi
@@ -101,8 +103,7 @@ echo
 echo "The checksums are printed so a reader can see whether the paths agree,"
 echo "rather than being asked to take it."
 echo
-echo "What the Vortex C row covers: the sieve only. The emitted C for"
-echo "bench/vortex/sieve.vx reports a matrix value of 3143 against 3314.003906"
-echo "from the two engines, so the compiled path does not yet agree on the whole"
-echo "workload. That row is a sieve measurement and is labelled as one. No"
-echo "figure for the full workload is claimed until the three agree."
+echo "All four Vortex paths run the whole workload and print the same checksum,"
+echo "the sieve and the matrix together. The Vortex C row was sieve only until"
+echo "stage 8 fixed the float path; FLOAT-DEFECT.md records the four defects"
+echo "that had to be fixed before it could measure the same work as the others."
