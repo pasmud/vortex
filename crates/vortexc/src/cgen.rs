@@ -810,6 +810,9 @@ fn emit_expr(
                 // with a message naming the index and the string.
                 return Ok(format!(
                     "({{ int32_t __vortex_c = vortex_char_at_index({b}, {i}); \
+                     if (__vortex_c == -2) {{ \
+                         fprintf(stderr, \"bad index: index %lld is negative\\n\", (long long)({i})); \
+                         exit(1); }} \
                      if (__vortex_c < 0) {{ \
                          fprintf(stderr, \"bad index: index %lld is past the end of %lld characters\\n\", \
                                  (long long)({i}), vortex_char_count({b})); \
@@ -1594,19 +1597,42 @@ fn print_tag_of(
         ast::ExprKind::Str(_) => return "0",
         ast::ExprKind::Paren(inner) => return print_tag_of(inner, lists, signatures),
         ast::ExprKind::Ident(n) => lists.get(&param_name(n)).map(|s| s.as_str()).unwrap_or("0"),
-        // A string index produces a `Char`, so it is tagged as one.
+        // An index produces a `Char` from a string, and otherwise the element
+        // type of the list. Without this an element of a list of `Bool` was
+        // tagged as text and `print` read an int as a pointer, which
+        // segfaulted. The element type is the same classification the list
+        // constructor is chosen by.
         ast::ExprKind::Index(base, _) => {
-            return match string_base_type(base, lists) {
-                Some(_) => "1",
-                None => "0",
+            if string_base_type(base, lists).is_some() {
+                return "1";
             }
+            return match index_element_type(base, lists) {
+                Some(t) => print_tag_of_c_type(&t),
+                None => "0",
+            };
         }
         _ => "0",
     };
+    print_tag_of_c_type(name)
+}
+
+/// The tag for a C type, which is the one place the mapping from a Vortex type to
+/// a print format is written down.
+fn print_tag_of_c_type(name: &str) -> &'static str {
     match name {
         "int32_t" => "1",
         "int" => "2",
         _ => "0",
+    }
+}
+
+/// The element type an index expression produces, which is the element type of
+/// the list it indexes.
+fn index_element_type(e: &ast::Expr, lists: &HashMap<String, String>) -> Option<String> {
+    match &e.kind {
+        ast::ExprKind::Ident(n) => lists.get(&param_name(n)).cloned(),
+        ast::ExprKind::Paren(inner) => index_element_type(inner, lists),
+        _ => list_element_type(e),
     }
 }
 
@@ -2117,6 +2143,10 @@ pub fn emit_program(
         "static int32_t vortex_char_at_index(const char *s, int64_t idx) {{"
     );
     let _ = writeln!(out, "    int64_t off = 0;");
+    let _ = writeln!(out, "    if (idx < 0) return -2;");
+    // A negative index is invalid in the other direction, and the walk loop
+    // would not run for it, so the first character came back instead. Both
+    // directions are rejected here.
     let _ = writeln!(out, "    for (int64_t k = 0; k < idx; k++) {{");
     let _ = writeln!(out, "        if (s[off] == 0) return -1;");
     let _ = writeln!(out, "        off += vortex_char_len(s, off);");
@@ -2138,6 +2168,12 @@ pub fn emit_program(
         ("i64", "int64_t".to_string()),
         ("f64", "double".to_string()),
         ("str", "const char *".to_string()),
+        ("int", "int".to_string()),
+        // A `Bool` is `int` in the generated C, and a list of one needs a
+        // constructor at that type. Without this it named a function that was
+        // never generated. Adding an arm to the type decision means walking the
+        // other places that switch on the same classification, and this is one:
+        // the list constructor is chosen by the element type.
     ];
     for c in declared_types() {
         let suffix: &'static str = Box::leak(c.clone().into_boxed_str());

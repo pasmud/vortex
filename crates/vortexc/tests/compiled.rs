@@ -843,3 +843,83 @@ fn printing_a_bool_prints_the_word() {
         Err(e) => panic!("printing a Bool should compile and run: {}", e),
     }
 }
+
+/// A list of `Bool` compiles and runs, in both the literal and the repeat form.
+///
+/// A `Bool` is classified as C `int`, and a list constructor is chosen by the
+/// element type. Adding the `Bool` arm to the type decision therefore reached a
+/// consumer that had no constructor at that type, so `[true]` named
+/// `vortex_list_new_int`, which was never generated, and `[true; 2]` named
+/// `vortex_list_repeat_int`, which was not either. The failure was a gcc error
+/// naming a function that does not exist.
+///
+/// The lesson is the one the shape gives, applied to the fix for the shape:
+/// **adding an arm to the type decision means walking the other places that
+/// switch on the same classification.** The list constructor is one, and the
+/// `print` tag is another, which is why this asserts output rather than only
+/// that the C compiles.
+#[test]
+fn a_list_of_bools_compiles_and_runs() {
+    let literal = "fn main() {
+        var a = [true];
+        print(a[0]);
+        println(\"\");
+    }";
+    assert_eq!(tree_stdout(literal), "true", "the tree interpreter");
+    assert_eq!(vm_stdout(literal), "true", "the VM");
+    match compiled_stdout(literal, "main") {
+        Ok(out) => assert_eq!(out, "true", "the compiled path at -O2 and -O0"),
+        Err(e) => panic!("a list of Bools should compile and run: {}", e),
+    }
+
+    let repeat = "fn main() {
+        var a = [false; 3];
+        print(a[0]);
+        print(a[2]);
+        println(\"\");
+    }";
+    assert_eq!(tree_stdout(repeat), "falsefalse", "the tree interpreter");
+    assert_eq!(vm_stdout(repeat), "falsefalse", "the VM");
+    match compiled_stdout(repeat, "main") {
+        Ok(out) => assert_eq!(out, "falsefalse", "the compiled path at -O2 and -O0"),
+        Err(e) => panic!("a repeat of Bools should compile and run: {}", e),
+    }
+}
+
+/// A negative string index is rejected through the same path as one past the end.
+///
+/// The bounds check was written for one direction of invalid, so a negative index
+/// did not run the walk loop and returned the first character. That is the shape
+/// again: a check that covers one case leaves the other falling through to a
+/// default.
+#[test]
+fn a_negative_string_index_is_rejected() {
+    let src = "fn main() {
+        let w = \"héllo\";
+        print(w[-1]);
+        println(\"\");
+    }";
+    let tree_out = tree_error(src);
+    assert!(
+        tree_out.contains("index -1 is negative"),
+        "the tree interpreter should say the index is negative, said {:?}",
+        tree_out
+    );
+    let vm_out = value(vortexc::run_on_vm(src, &mut std::io::sink()));
+    assert!(
+        vm_out.contains("index -1 is negative"),
+        "the VM should say the same, said {:?}",
+        vm_out
+    );
+    match compiled_stdout(src, "main") {
+        Ok(out) => panic!(
+            "a negative index should not print {:?}, it should fail",
+            out
+        ),
+        Err(e) => assert!(
+            e.contains("index -1 is negative"),
+            "the compiled path should reject a negative index, said {:?}",
+            e
+        ),
+    }
+}

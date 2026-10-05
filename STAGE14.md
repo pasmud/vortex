@@ -35,7 +35,7 @@ use a value whose natural type is not the default**, or they pass against
 broken code. The letter-case defect the external review found is the same
 mistake in a different place: a check that only a one-letter name satisfied.
 
-## The seven instances, in the order they were found
+## The eight instances, in the order they were found
 
 | # | Missing arm for | What happened | Found by |
 | --- | --- | --- | --- |
@@ -47,10 +47,17 @@ mistake in a different place: a check that only a one-letter name satisfied.
 | 6 | `string_to_int` | no case at all, so a `+` on it was refused | stage 14, `strings.vx` |
 | 7 | a call inside a collection value | the callee was never emitted | stage 14, `fieldarith.vx` |
 | 8 | `Bool` | no arm, so a binding was `int64_t` and `print` printed a pointer's bytes | stage 14, an external review |
+| 9 | a list of `Bool` | the new `int` classification named a constructor that was never generated | stage 14, the same review |
+
+Instances 1 to 7 are the original seven. Instances 8 and 9 are the `Bool`
+printing failure and the `Bool` list that followed from fixing it, both raised by
+the same review, and both instances of the shape arrived at through fixing an
+instance of the shape.
 
 Instances 1, 2 and 5 were **silently wrong answers**. Instances 3, 4 and 6 were
-refusals. Instance 7 was a gcc error. Three outcomes from one shape, and which
-one you get is decided by where the missing arm sat.
+refusals. Instance 7 was a gcc error. Instance 8, the `Bool` print, was a
+**segfault**. Four outcomes from one shape, and which one you get is decided by
+where the missing arm sat.
 
 **Four of the seven were found by writing a program that exercised something no
 program had reached, and three by asking a question about the shape rather than
@@ -66,7 +73,7 @@ own test could not see, and the reason is the method problem stated above.
 
 **A string index was passed to `vortex_char_at` as a byte offset, while a Vortex
 index counts characters.** For `"héllo"[2]` the generated C read byte 2, which is
-the second byte of the two byte `é`, and returned the replacement character
+the second byte of the two-byte `é`, and returned the replacement character
 `U+FFFD` instead of `l`. There was also no bounds check, so an index past the end
 read past the NUL terminator, which is undefined behaviour in C, while the
 interpreters reported a bad index.
