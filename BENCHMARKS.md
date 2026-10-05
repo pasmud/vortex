@@ -32,7 +32,8 @@ Every figure in this table is copied from the committed transcript above, and
 `scripts/check-benchmarks.sh` fails if a number here is not the number the
 transcript records. That check exists because an earlier revision of this file
 was written by hand from one run while the transcript was from another, and all
-four documented numbers were the faster ones.
+four numbers disagreed. `CORRECTIONS.md` records which way each one drifted: three
+of the four were pessimistic and one was optimistic by 1 ms.
 
 The reason is not the dispatch the VM was built to remove. A tree walk in Rust
 recurses, so each Vortex call becomes native calls that the optimiser already
