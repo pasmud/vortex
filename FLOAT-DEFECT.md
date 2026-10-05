@@ -83,6 +83,41 @@ the route the next commit takes, and it is the fourth route rather than a repeat
 of the first three: it is not inference from the index or from the base syntax,
 it is a map built during the same walk that emits the declaration.
 
+## What the emitter-side map looks like, and what is still missing
+
+The emitter-side route is now in place and is the fourth route rather than a
+repeat of the first three. `emit_stmt`, `emit_block` and `emit_expr` carry a
+`HashMap<String, &static str>` from the name a list was declared under to the C
+element type. A `let` whose initialiser is a list literal or a repeat records
+the element type there, and an index or an index store into that name reads the
+cast from it. A base that is itself a literal or a repeat takes its element type
+directly.
+
+That part is done. Two things are still missing, and both were lost to a
+`git checkout` of `cgen.rs` during an earlier edit rather than never applied:
+
+- `expr_type_of` again returns `int64_t` for arithmetic unless the operator is
+  a comparison, so `v * 0.5 + 1.0` declares an integer and truncates 2.5 to 2.
+  The reduction program `v * 0.5 + 1.0` currently reports 2 against 2.500000.
+- The entry still printed its return with `%lld`, so a Float truncated in the
+  harness as well. That one is fixed in the current commit.
+
+## A process note that has now cost three turns
+
+`git checkout <file>` during an edit reverts every fix already verified in that
+file, not just the work in progress. Each time, fixes that had been confirmed by
+a reduction program were silently undone and had to be reapplied. The file being
+edited is `crates/vortexc/src/cgen.rs` and it now carries four separately
+verified fixes.
+
+The next commit applies the `expr_type_of` fix, re-runs the reduction programs
+from this file, and then checks the two list reductions:
+
+| Program | Must now equal the engine value |
+| --- | --- |
+| `var a = [1.0; 6]; a[5] = 0.25; return a[5];` | 0.250000 |
+| `var a = [0.0; 16]; a[5] = 1.5; return a[0 * n + 5];` | 1.500000 |
+
 ## State of the benchmark row
 
 The compiled row is still labelled `sieve only` in `STAGE7.md`, the Vortex row
