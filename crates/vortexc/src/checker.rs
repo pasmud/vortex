@@ -573,11 +573,7 @@ impl<'a> Checker<'a> {
                 got
             }
 
-            ir::Expr::Index {
-                base,
-                index,
-                pos: _,
-            } => {
+            ir::Expr::Index { base, index, .. } => {
                 let b = self.expr(base, env)?;
                 let i = self.expr(index, env)?;
                 if i != Type::Int {

@@ -204,6 +204,14 @@ pub enum Expr {
     Index {
         base: Box<Expr>,
         index: Box<Expr>,
+        /// The element type of the list being indexed.
+        ///
+        /// The index expression does not carry it: `a[i]` has an `Int` index
+        /// whatever `a` holds, so recovering it from the syntax guesses from the
+        /// wrong fact. The lowering pass resolved the list when it allocated
+        /// the slot, so it records the element type here and a consumer reads
+        /// it rather than inferring it.
+        element: Option<crate::lower::Element>,
         pos: Pos,
     },
     /// Store into a list element, as `a[i] = v`.

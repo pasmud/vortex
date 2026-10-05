@@ -61,6 +61,28 @@ The three routes tried and why each fails:
   frontend contract, so it is worth its own commit and its own review rather
   than being bolted on here.
 
+## Where the element type actually lives
+
+The brief asked whether the element type belongs on `ir::Expr::Index`, and the
+answer is that it does not, because **`cgen.rs` never reads the IR.**
+
+`emit_function` takes an `ast::FnDecl` and `emit_program` takes
+`[Spanned<ast::FnDecl>]`. The emitter walks the **AST**, the same tree the tree
+interpreter walks. Putting the type on `ir::Expr::Index` would therefore have
+changed a structure the emitter cannot see, which is why the first attempt at
+this fix went nowhere.
+
+The field has been added to `ir::Expr::Index` anyway, computed by the lowering
+pass from the binding the base names, because it belongs there for a consumer
+that does read the IR: the bytecode VM. It is additive, so the tree interpreter
+and the VM are unaffected, which is what the brief required.
+
+For the emitter the type has to come from the AST side, which means recording it
+in the emitter as it walks, keyed by the name a list was declared under. That is
+the route the next commit takes, and it is the fourth route rather than a repeat
+of the first three: it is not inference from the index or from the base syntax,
+it is a map built during the same walk that emits the declaration.
+
 ## State of the benchmark row
 
 The compiled row is still labelled `sieve only` in `STAGE7.md`, the Vortex row

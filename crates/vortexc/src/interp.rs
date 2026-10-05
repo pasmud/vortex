@@ -481,7 +481,9 @@ impl<'a> Vm<'a> {
                 Eval::Value(v)
             }
 
-            ir::Expr::Index { base, index, pos } => {
+            ir::Expr::Index {
+                base, index, pos, ..
+            } => {
                 let b = self.eval(base, frame)?.value();
                 let i = self.eval(index, frame)?.value();
                 Eval::Value(index_into(b, i, *pos)?)
