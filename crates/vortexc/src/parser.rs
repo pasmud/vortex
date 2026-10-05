@@ -341,6 +341,11 @@ impl<'a> Parser<'a> {
     fn block(&mut self) -> Result<Block, ParseError> {
         self.expect(Tok::LBrace)?;
         let saved = self.struct_literal_ok;
+        // A block body may hold struct literals, so they are enabled here. The
+        // guard is set before the opening brace is consumed, because whether a
+        // brace is a body or a record depends on the context the caller was in:
+        // in a `for` header the caller has turned struct literals off, and the
+        // brace there opens the body rather than starting a record.
         self.struct_literal_ok = true;
         let result = self.block_body();
         self.struct_literal_ok = saved;
@@ -477,7 +482,25 @@ impl<'a> Parser<'a> {
                 let found = self.peek().describe();
                 return self.fail(found_pos, "`in`", &found);
             }
-            let start = self.expr()?;
+            // The iterable is an expression and not a statement, so a brace
+            // after it opens the loop body rather than a struct literal. With a
+            // struct literal allowed here, `for x in t { ... }` parsed `t` as
+            // the start of `t { ... }` and the body never parsed at all, which
+            // is why a tuple bound to a name could not be walked.
+            let start = {
+                let saved = self.struct_literal_ok;
+                self.struct_literal_ok = false;
+                let e = self.expr()?;
+                self.struct_literal_ok = saved;
+                e
+            };
+            // The header keeps struct literals off until the body has been
+            // entered, because the brace after the iterable opens the body.
+            // `block()` would turn them back on before consuming it, so
+            // `for x in t { ... }` read `t {` as a struct literal and the body
+            // never parsed.
+            let header_saved = self.struct_literal_ok;
+            self.struct_literal_ok = false;
             let (end, inclusive) = if self.eat(&Tok::DotDotEq) {
                 (Some(self.expr()?), true)
             } else if self.eat(&Tok::DotDot) {
@@ -487,7 +510,11 @@ impl<'a> Parser<'a> {
                 // list or a string.
                 (None, false)
             };
-            let body = self.block()?;
+            self.expect(Tok::LBrace)?;
+            self.struct_literal_ok = true;
+            let body = self.block_body();
+            self.struct_literal_ok = header_saved;
+            let body = body?;
             StmtKind::For {
                 var,
                 start,
