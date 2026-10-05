@@ -6,6 +6,7 @@
 
 pub mod ast;
 pub mod bytecode;
+pub mod cgen;
 pub mod checker;
 pub mod interp;
 pub mod ir;
