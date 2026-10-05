@@ -1,0 +1,23 @@
+Vortex compiled path measurement
+==============================
+
+Repeats:          5
+Function:         sum_squares over 2000000
+Workload:         /workspace/repo/bench/build/compiled/loop.vx
+Compiled binary:  /tmp/vortex-cgen/program
+C compiler:       cc (Debian 12.2.0-14+deb12u1) 12.2.0
+
+PATH       RUN TIMES IN ms, THEN ANSWER
+---------  ------------------------------------------------
+compiled  6 6 7 9 7 | 2666668666667000000
+tree      560 561 561 560 563 | 2666668666667000000
+vm        949 949 943 954 941 | 2666668666667000000
+
+The three answers have to match. They are printed above so a reader can
+see that they do, rather than being asked to take it.
+
+What this does not measure: the whole benchmark workload. The emitter
+handles scalar functions with loops, and refuses anything with a list, an
+if expression or a match, so it cannot carry bench/vortex/sieve.vx yet.
+A number for the full workload would require an emitter that can, and
+none is claimed here.

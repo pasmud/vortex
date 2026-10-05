@@ -7,10 +7,12 @@
 //!
 //! Usage:
 //!
-//!     cargo run --release --example run_example -- <file.vx> [--vm]
+//!     cargo run --release --example run_example -- <file.vx> [--vm] [--print-value]
 //!
 //! With no flag the tree interpreter runs, so existing behaviour is unchanged.
-//! `--vm` selects the virtual machine.
+//! `--vm` selects the virtual machine. `--print-value` prints what `main`
+//! returned on its own line, which the compiled path measurement compares
+//! against the compiled binary's output.
 
 use std::io::Write;
 
@@ -24,6 +26,7 @@ fn main() {
         }
     };
     let use_vm = args.iter().any(|a| a == "--vm");
+    let print_value = args.iter().any(|a| a == "--print-value");
 
     let src = match std::fs::read_to_string(&path) {
         Ok(s) => s,
@@ -33,24 +36,22 @@ fn main() {
         }
     };
 
-    if use_vm {
-        match vortexc::run_on_vm(&src, &mut std::io::stdout()) {
-            Ok(_) => {
-                let _ = std::io::stdout().flush();
-            }
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-        }
-        return;
-    }
+    let mut out = std::io::stdout();
+    let result = if use_vm {
+        vortexc::run_on_vm(&src, &mut out)
+    } else {
+        vortexc::run_source(&src, &mut out)
+    };
 
-    match vortexc::run_source(&src, &mut std::io::stdout()) {
-        Ok(_) => {
-            let _ = std::io::stdout().flush();
+    match result {
+        Ok(value) => {
+            if print_value {
+                println!("{}", vortexc::interp::display(&value));
+            }
+            let _ = out.flush();
         }
         Err(e) => {
+            let _ = out.flush();
             eprintln!("{}", e);
             std::process::exit(1);
         }

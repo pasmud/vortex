@@ -379,24 +379,52 @@ pub fn emit_program(
 
     // The C entry point is named apart from the Vortex one, because a Vortex
     // program has its own `main` and two C functions of that name collide.
-    let _ = writeln!(out, "int vortex_c_entry(void) {{");
+    let _ = writeln!(
+        out,
+        "{} vortex_c_entry(void) {{",
+        entry_c_type(functions, entry)
+    );
     // The Vortex entry takes its declared parameters, so the call passes one
     // value per parameter. v0.1 has no list type, so every parameter is a
     // scalar and a literal is enough to exercise the compiled path.
     let params: Vec<String> = args.to_vec();
     let _ = writeln!(
         out,
-        "    return (int){}({});",
+        "    return {}({});",
         param_name(entry),
         params.join(", ")
     );
     let _ = writeln!(out, "}}\n");
 
     let _ = writeln!(out, "int main(void) {{");
-    let _ = writeln!(out, "    printf(\"%d\\n\", vortex_c_entry());");
+    match entry_c_type(functions, entry) {
+        "double" => {
+            let _ = writeln!(out, "    printf(\"%.6f\\n\", vortex_c_entry());");
+        }
+        "const char *" => {
+            let _ = writeln!(out, "    printf(\"%s\\n\", vortex_c_entry());");
+        }
+        _ => {
+            let _ = writeln!(out, "    printf(\"%lld\\n\", (long long)vortex_c_entry());");
+        }
+    }
     let _ = writeln!(out, "    return 0;\n}}");
     let _ = args;
     Ok(out)
+}
+
+/// The C type the entry point carries its result in.
+///
+/// It is the entry function's declared return type, so a 64 bit `Int` is not
+/// truncated on the way out. Casting it through `int` gave a wrong answer that
+/// agreed with nothing.
+fn entry_c_type(functions: &[Spanned<ast::FnDecl>], entry: &str) -> &'static str {
+    functions
+        .iter()
+        .find(|f| f.node.name == entry)
+        .and_then(|f| f.node.ret.as_ref())
+        .and_then(|t| c_type(t))
+        .unwrap_or("int64_t")
 }
 
 /// The names reachable from `entry`, which is the set worth emitting.

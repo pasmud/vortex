@@ -185,3 +185,48 @@ done
 
 echo "DECISION.md's before figures appear in bench/results/stage5-baseline.txt."
 echo "The check is satisfied."
+
+
+# --- MEASUREMENTS.md --------------------------------------------------------
+#
+# Stage 6 records its figures in its own document, and they have the same
+# traceability requirement as the other two. The compiled path measurement is in
+# bench/results/stage6-compiled.txt and every row quoted in MEASUREMENTS.md has
+# to match it.
+MEAS="$ROOT/MEASUREMENTS.md"
+TRANSCRIPT6="$ROOT/bench/results/stage6-compiled.txt"
+
+if [ -f "$MEAS" ] && [ -f "$TRANSCRIPT6" ]; then
+    MFLAT=$(tr '\n' ' ' < "$MEAS" | tr -s ' ')
+    T6FLAT=$(tr '\n' ' ' < "$TRANSCRIPT6" | tr -s ' ')
+
+    # Each row's run times and answer, as the transcript records them.
+    # The document writes the runs as a comma separated list for readability while
+    # the transcript writes them space separated, so commas become spaces before
+    # the two are compared.
+    MDOTS=$(printf '%s' "$MFLAT" | tr ',' ' ' | tr -s ' ')
+    for row in "6 6 7 9 7" "560 561 561 560 563" "949 949 943 954 941"; do
+        case "$MDOTS" in
+            *"$row"*) ;;
+            *) fail "MEASUREMENTS.md does not quote the run '$row'" ;;
+        esac
+        case "$T6FLAT" in
+            *"$row"*) ;;
+            *) fail "MEASUREMENTS.md quotes the run '$row' and bench/results/stage6-compiled.txt does not record it" ;;
+        esac
+    done
+    # Every path has to report the same answer, and the document has to say it.
+    for answer in 2666668666667000000; do
+        case "$MFLAT" in
+            *"$answer"*) ;;
+            *) fail "MEASUREMENTS.md does not record the answer $answer" ;;
+        esac
+        case "$T6FLAT" in
+            *"$answer"*) ;;
+            *) fail "the committed transcript does not record the answer $answer" ;;
+        esac
+    done
+
+    echo "MEASUREMENTS.md's figures appear in bench/results/stage6-compiled.txt."
+fi
+echo "The check is satisfied."
