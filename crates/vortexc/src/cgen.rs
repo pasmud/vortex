@@ -275,7 +275,7 @@ fn emit_stmt(
                     };
                     let _ = writeln!(
                         out,
-                        "((({c} *)(({b}).items))[({i})] = ({v});",
+                        "((({c} *)({b}).items)[({i})]) = {v};",
                         c = elem,
                         b = emit_expr(base, lists)?,
                         i = emit_expr(i, lists)?,
@@ -401,7 +401,7 @@ fn expr_type_of(e: &ast::Expr) -> &'static str {
         ast::ExprKind::Bool(_) => "int",
         ast::ExprKind::Char(_) => "int32_t",
         ast::ExprKind::Str(_) => "const char *",
-        ast::ExprKind::Binary { op, .. } => match op {
+        ast::ExprKind::Binary { op, lhs, rhs } => match op {
             ast::BinOp::Eq
             | ast::BinOp::Ne
             | ast::BinOp::Lt
@@ -410,7 +410,17 @@ fn expr_type_of(e: &ast::Expr) -> &'static str {
             | ast::BinOp::Ge
             | ast::BinOp::And
             | ast::BinOp::Or => "int",
-            _ => "int64_t",
+            // Arithmetic is a Float when either operand is, which is the rule
+            // the checker applies in section 6.1 rule 4 and the tree
+            // interpreter follows. Without it `v * 0.5 + 1.0` declared an
+            // integer and truncated 2.5 to 2.
+            _ => {
+                if expr_type_of(lhs) == "double" || expr_type_of(rhs) == "double" {
+                    "double"
+                } else {
+                    "int64_t"
+                }
+            }
         },
         ast::ExprKind::Neg(inner) => expr_type_of(inner),
         _ => "int64_t",
@@ -489,7 +499,7 @@ fn emit_expr(e: &ast::Expr, lists: &HashMap<String, &'static str>) -> Result<Str
             };
             let b = emit_expr(base, lists)?;
             let i = emit_expr(index, lists)?;
-            format!("((({c} *)(({b}).items))[({i})])", c = elem, b = b, i = i)
+            format!("((({c} *)({b}).items)[({i})])", c = elem, b = b, i = i)
         }
         ast::ExprKind::Field(base, _) => {
             // A field read on a struct the emitter emitted inline.
@@ -682,6 +692,50 @@ pub fn emit_program(
     let _ = writeln!(out, "    return l;");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out, "");
+    // One constructor per element type. The struct carries a void * because a
+    // Vortex list is not homogeneous in C's type system, so the element type
+    // has to be named at the call site. Declaring them here means a call may
+    // appear before the definition.
+    for (suffix, elem) in [
+        ("i64", "int64_t"),
+        ("f64", "double"),
+        ("str", "const char *"),
+    ] {
+        let _ = writeln!(
+            out,
+            "static CList vortex_list_new_{suffix}(int64_t len, const {elem} *values) {{"
+        );
+        let _ = writeln!(out, "    CList l;");
+        let _ = writeln!(out, "    l.len = len;");
+        let _ = writeln!(
+            out,
+            "    l.items = malloc(sizeof({elem}) * (size_t)(len > 0 ? len : 1));"
+        );
+        let _ = writeln!(
+            out,
+            "    for (int64_t k = 0; k < len; k++) (({elem} *)l.items)[k] = values[k];"
+        );
+        let _ = writeln!(out, "    return l;");
+        let _ = writeln!(out, "}}");
+        let _ = writeln!(out, "");
+        let _ = writeln!(
+            out,
+            "static CList vortex_list_repeat_{suffix}(int64_t len, {elem} value) {{"
+        );
+        let _ = writeln!(out, "    CList l;");
+        let _ = writeln!(out, "    l.len = len;");
+        let _ = writeln!(
+            out,
+            "    l.items = malloc(sizeof({elem}) * (size_t)(len > 0 ? len : 1));"
+        );
+        let _ = writeln!(
+            out,
+            "    for (int64_t k = 0; k < len; k++) (({elem} *)l.items)[k] = value;"
+        );
+        let _ = writeln!(out, "    return l;");
+        let _ = writeln!(out, "}}");
+        let _ = writeln!(out, "");
+    }
     let _ = writeln!(out, "");
     let _ = writeln!(
         out,
