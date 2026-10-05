@@ -51,5 +51,12 @@ jobs:
       - name: Run the benchmark harness
         run: ./bench/run.sh
 
+      - name: Check the examples agree on all three paths
+        # The tree interpreter, the bytecode VM and the compiled path have to
+        # produce identical output for every example. An example the emitter
+        # refuses is listed with its reason rather than failing, so a refusal by
+        # name stays visible.
+        run: ./scripts/check-examples.sh
+
       - name: Fail if BENCHMARKS.md claims a result without a source
         run: ./scripts/check-benchmarks.sh

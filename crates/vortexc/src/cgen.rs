@@ -54,15 +54,42 @@ impl std::fmt::Display for Unsupported {
 /// Every value in v0.1 is a scalar or an aggregate of scalars, so the mapping is
 /// direct. A list would become a struct with a pointer and a length, which is not
 /// written yet.
-fn c_type(t: &ast::TypeExpr) -> Option<&'static str> {
-    match t.name() {
-        "Int" => Some("int64_t"),
-        "Float" => Some("double"),
-        "Bool" => Some("int"),
-        "Char" => Some("int32_t"),
-        "Str" => Some("const char *"),
-        _ => None,
+fn c_type(t: &ast::TypeExpr) -> Option<String> {
+    c_type_named(t.name())
+}
+
+fn c_type_named(name: &str) -> Option<String> {
+    match name {
+        "Int" => Some("int64_t".to_string()),
+        "Float" => Some("double".to_string()),
+        "Bool" => Some("int".to_string()),
+        "Char" => Some("int32_t".to_string()),
+        "Str" => Some("const char *".to_string()),
+        _ => declared_type(name),
     }
+}
+
+// The struct and enum names declared by the program being emitted.
+//
+// `c_type` is called from many places that do not carry the program, so the
+// names are recorded in a thread local rather than threaded through every
+// call site. A name not in here is not a type this emitter knows, which is how
+// an unknown type is refused rather than guessed at.
+thread_local! {
+    static DECLARED: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The C name of a declared struct or enum, if the program declares one.
+fn declared_type(name: &str) -> Option<String> {
+    let mangled = param_name(name);
+    DECLARED.with(|d| {
+        if d.borrow().iter().any(|n| *n == mangled) {
+            Some(format!("C{mangled}"))
+        } else {
+            None
+        }
+    })
 }
 
 /// Emits one function as a C function definition.
@@ -83,7 +110,7 @@ pub fn emit_function(
     signatures: &Signatures,
 ) -> Result<String, Unsupported> {
     let ret = match &f.node.ret {
-        None => "void",
+        None => "void".to_string(),
         Some(t) => c_type(t).ok_or_else(|| {
             Unsupported::Construct(format!("the return type `{}`", t.name()), f.pos)
         })?,
@@ -112,11 +139,18 @@ pub fn emit_function(
         param_name(&f.node.name),
         param_list
     );
-    let mut lists = HashMap::new();
-    emit_block(&mut out, &f.node.body, 1, ret, &mut lists, &signatures)?;
+    let mut lists: HashMap<String, String> = HashMap::new();
+    // Parameters are recorded as they are declared. A string parameter indexed
+    // would otherwise be emitted as a list access, which is a different thing.
+    for p in &f.node.params {
+        if let Some(t) = c_type(&p.ty) {
+            lists.insert(param_name(&p.name), t);
+        }
+    }
+    emit_block(&mut out, &f.node.body, 1, &ret, &mut lists, &signatures)?;
     // A body that falls off the end returns the zero value, which is what the
     // interpreters do too.
-    let zero = match ret {
+    let zero = match ret.as_str() {
         "double" => "0.0",
         "const char *" => "0",
         "void" => "",
@@ -176,7 +210,7 @@ fn emit_block(
     b: &ast::Block,
     depth: usize,
     ret: &str,
-    lists: &mut HashMap<String, &'static str>,
+    lists: &mut HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<(), Unsupported> {
     for stmt in &b.stmts {
@@ -196,6 +230,27 @@ fn emit_block(
     Ok(())
 }
 
+/// The Vortex type of a base expression when it is a string, so indexing it can
+/// be refused by name.
+///
+/// A name is looked up in the recorded bindings, a literal is its own type, and
+/// anything else is not a string.
+fn string_base_type(
+    e: &ast::Expr,
+    _signatures: &Signatures,
+    lists: &HashMap<String, String>,
+) -> Option<&'static str> {
+    match &e.kind {
+        ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).map(|s| s.as_str()) {
+            Some("const char *") => Some("Str"),
+            _ => None,
+        },
+        ast::ExprKind::Str(_) => Some("Str"),
+        ast::ExprKind::Paren(inner) => string_base_type(inner, _signatures, lists),
+        _ => None,
+    }
+}
+
 /// The name suffix for the constructor of a list of this element type.
 fn list_suffix(elem: &str) -> &'static str {
     match elem {
@@ -210,7 +265,7 @@ fn list_suffix(elem: &str) -> &'static str {
 /// The rule matches the one the lowering pass uses: a literal takes the type of
 /// its first element, which is sound because the checker rejects a mixed list,
 /// and a repeat takes the type of the value it repeats.
-fn list_element_type(e: &ast::Expr) -> Option<&'static str> {
+fn list_element_type(e: &ast::Expr) -> Option<String> {
     match &e.kind {
         ast::ExprKind::Array(items) => items.first().and_then(value_c_type),
         ast::ExprKind::Repeat { value, .. } => value_c_type(value),
@@ -221,16 +276,16 @@ fn list_element_type(e: &ast::Expr) -> Option<&'static str> {
 
 /// The element type a base expression produces, when the base is itself a list
 /// expression rather than a name.
-fn list_element_type_index(base: &ast::Expr, _other: &ast::ExprKind) -> Option<&'static str> {
+fn list_element_type_index(base: &ast::Expr, _other: &ast::ExprKind) -> Option<String> {
     list_element_type(base)
 }
 
 /// The C type of a scalar value expression.
-fn value_c_type(e: &ast::Expr) -> Option<&'static str> {
+fn value_c_type(e: &ast::Expr) -> Option<String> {
     match &e.kind {
-        ast::ExprKind::Int(_) => Some("int64_t"),
-        ast::ExprKind::Float(_) => Some("double"),
-        ast::ExprKind::Str(_) => Some("const char *"),
+        ast::ExprKind::Int(_) => Some("int64_t".to_string()),
+        ast::ExprKind::Float(_) => Some("double".to_string()),
+        ast::ExprKind::Str(_) => Some("const char *".to_string()),
         ast::ExprKind::Cast(_, t) => c_type(t),
         _ => None,
     }
@@ -241,7 +296,7 @@ fn emit_stmt(
     s: &ast::Stmt,
     depth: usize,
     ret: &str,
-    lists: &mut HashMap<String, &'static str>,
+    lists: &mut HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<(), Unsupported> {
     match &s.kind {
@@ -251,6 +306,11 @@ fn emit_stmt(
             // name reads through the right cast later in the same walk.
             if let Some(elem) = list_element_type(init) {
                 lists.insert(param_name(name), elem);
+            }
+            // A string binding is recorded too, so indexing it can be refused
+            // by name rather than emitted as a list access.
+            if expr_type_of(init, signatures) == "const char *" {
+                lists.insert(param_name(name), "const char *".to_string());
             }
             indent(out, depth);
             let _ = writeln!(
@@ -280,12 +340,13 @@ fn emit_stmt(
                     // The element type comes from the name the base is bound
                     // to, recorded when that declaration was emitted.
                     let elem = match &base.kind {
-                        ast::ExprKind::Ident(n) => {
-                            lists.get(&param_name(n)).copied().unwrap_or("int64_t")
-                        }
+                        ast::ExprKind::Ident(n) => lists
+                            .get(&param_name(n))
+                            .cloned()
+                            .unwrap_or_else(|| "int64_t".to_string()),
                         other => list_element_type_index(base, other)
                             .or_else(|| list_element_type(base))
-                            .unwrap_or("int64_t"),
+                            .unwrap_or_else(|| "int64_t".to_string()),
                     };
                     let _ = writeln!(
                         out,
@@ -380,12 +441,12 @@ fn emit_stmt(
             body,
             ..
         } => {
-            // An inclusive range is a strict comparison against one past the
-            // end, which is how the interpreters do it too. An open ended range
-            // is not expressible in v0.1 and is refused rather than guessed at.
-            let end = end.as_ref().ok_or_else(|| {
-                Unsupported::Construct("an open ended for range".to_string(), s.pos)
-            })?;
+            // `for x in e { ... }` with no end walks a list or a string. It was
+            // refused as an open ended range, which it is not: SPEC.md section
+            // 8 defines the second `for` form as walking a collection.
+            let Some(end) = end else {
+                return emit_for_in(out, s, var, start, body, depth, ret, lists, signatures);
+            };
             let limit = if *inclusive {
                 format!("({} + 1)", emit_expr(end, lists, signatures)?)
             } else {
@@ -416,17 +477,17 @@ fn emit_stmt(
 /// The emitter needs it because a `let` holding a call has to be declared at
 /// what the callee returns. Inferring it from the call expression would always
 /// say Int, which truncated a Float result.
-type Signatures = HashMap<String, &'static str>;
+type Signatures = HashMap<String, String>;
 
-fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> &'static str {
+fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
     match &e.kind {
         // A list is a struct with a pointer and a length, not a scalar.
-        ast::ExprKind::Array(_) | ast::ExprKind::Repeat { .. } => "CList",
-        ast::ExprKind::Int(_) => "int64_t",
-        ast::ExprKind::Float(_) => "double",
-        ast::ExprKind::Bool(_) => "int",
-        ast::ExprKind::Char(_) => "int32_t",
-        ast::ExprKind::Str(_) => "const char *",
+        ast::ExprKind::Array(_) | ast::ExprKind::Repeat { .. } => "CList".to_string(),
+        ast::ExprKind::Int(_) => "int64_t".to_string(),
+        ast::ExprKind::Float(_) => "double".to_string(),
+        ast::ExprKind::Bool(_) => "int".to_string(),
+        ast::ExprKind::Char(_) => "int32_t".to_string(),
+        ast::ExprKind::Str(_) => "const char *".to_string(),
         ast::ExprKind::Binary { op, lhs, rhs } => match op {
             ast::BinOp::Eq
             | ast::BinOp::Ne
@@ -435,7 +496,7 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> &'static str {
             | ast::BinOp::Gt
             | ast::BinOp::Ge
             | ast::BinOp::And
-            | ast::BinOp::Or => "int",
+            | ast::BinOp::Or => "int".to_string(),
             // Arithmetic is a Float when either operand is, which is the rule
             // the checker applies in section 6.1 rule 4 and the tree
             // interpreter follows. Without it `v * 0.5 + 1.0` declared an
@@ -444,19 +505,73 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> &'static str {
                 if expr_type_of(lhs, signatures) == "double"
                     || expr_type_of(rhs, signatures) == "double"
                 {
-                    "double"
+                    "double".to_string()
                 } else {
-                    "int64_t"
+                    "int64_t".to_string()
                 }
             }
         },
         ast::ExprKind::Neg(inner) => expr_type_of(inner, signatures),
+        // A `match` has the type of its arms. The first arm is representative:
+        // the checker requires every arm to agree, so reading one is not a
+        // guess.
+        ast::ExprKind::Match { arms, .. } => arms
+            .first()
+            .map(|a| expr_type_of(&a.body, signatures))
+            .unwrap_or_else(|| "int64_t".to_string()),
+        // An `if` used as a value has the type of its branches, and the
+        // checker requires them to agree. A branch is a block, so its type is
+        // the type of its trailing expression.
+        ast::ExprKind::If {
+            then, otherwise, ..
+        } => {
+            let from_then =
+                block_value_type(then, signatures).unwrap_or_else(|| "int64_t".to_string());
+            match otherwise {
+                Some(alt) => match alt.as_ref() {
+                    ast::Else::Block(b) => {
+                        block_value_type(b, signatures).unwrap_or_else(|| from_then.clone())
+                    }
+                    ast::Else::If(inner) => expr_type_of(&inner.node, signatures),
+                },
+                None => from_then,
+            }
+        }
         // A call returns whatever the callee declares. Without this a `let`
         // holding a Float result was declared int64_t and truncated it, which
         // is why `let m = matrix_work();` lost its fraction before the entry
         // ever printed it.
-        ast::ExprKind::Call { callee, .. } => signatures.get(callee).copied().unwrap_or("int64_t"),
-        _ => "int64_t",
+        ast::ExprKind::Call { callee, .. } => signatures
+            .get(callee)
+            .cloned()
+            .unwrap_or_else(|| "int64_t".to_string()),
+        _ => c_type_of_expr(e, signatures),
+    }
+}
+
+/// The type of an expression the arithmetic rule has no answer for, which is
+/// most expressions reached through a declaration rather than through their
+/// own node.
+/// The type of a block used as a value, which is the type of its trailing
+/// expression.
+fn block_value_type(b: &ast::Block, signatures: &Signatures) -> Option<String> {
+    b.tail.as_deref().map(|t| expr_type_of(t, signatures))
+}
+
+fn c_type_of_expr(e: &ast::Expr, _signatures: &Signatures) -> String {
+    match &e.kind {
+        ast::ExprKind::Ident(_) => "int64_t".to_string(),
+        ast::ExprKind::Record { ty, .. }
+        | ast::ExprKind::Variant { ty, .. }
+        | ast::ExprKind::VariantCall { ty, .. }
+        | ast::ExprKind::VariantRecord { ty, .. } => format!("C{}", param_name(ty)),
+        ast::ExprKind::Tuple(items) => match items.len() {
+            2 => "CTuple2".to_string(),
+            3 => "CTuple3".to_string(),
+            4 => "CTuple4".to_string(),
+            n => format!("a {n} element tuple"),
+        },
+        _ => "int64_t".to_string(),
     }
 }
 
@@ -468,12 +583,15 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> &'static str {
 ///
 fn emit_expr(
     e: &ast::Expr,
-    lists: &HashMap<String, &'static str>,
+    lists: &HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<String, Unsupported> {
     Ok(match &e.kind {
         ast::ExprKind::Int(v) => format!("INT64_C({})", v),
-        ast::ExprKind::Float(v) => format!("{:.6}", v),
+        // Round-trippable, so a program's Float literal is the same value the
+        // interpreters parse. Six decimals is not enough: `3.14159265` became
+        // `3.141593` and an answer differed in the last digit.
+        ast::ExprKind::Float(v) => format!("{:.17}", v),
         ast::ExprKind::Bool(v) => (if *v { "1" } else { "0" }).to_string(),
         ast::ExprKind::Char(c) => format!("{}", *c as u32),
         ast::ExprKind::Str(s) => format!("\"{}\"", c_escape(s)),
@@ -504,10 +622,16 @@ fn emit_expr(
             for i in items {
                 parts.push(emit_expr(i, lists, signatures)?);
             }
+            // The constructor is chosen by the element type, so a list of
+            // strings builds through the string constructor rather than an
+            // int64_t array, which does not compile for a string.
+            let elem = list_element_type(e).unwrap_or_else(|| "int64_t".to_string());
+            let suffix = list_suffix(&elem);
             format!(
-                "vortex_list_new({}u, (int64_t[]){{ {} }})",
-                parts.len(),
-                parts.join(", ")
+                "vortex_list_new_{suffix}({n}u, ({elem}[]){{ {parts} }})",
+                n = parts.len(),
+                elem = elem,
+                parts = parts.join(", ")
             )
         }
         ast::ExprKind::Repeat { value, count } => {
@@ -518,12 +642,23 @@ fn emit_expr(
             let n = emit_expr(count, lists, signatures)?;
             format!(
                 "vortex_list_repeat_{}({n}, {v})",
-                list_suffix(elem),
+                list_suffix(&elem),
                 n = n,
                 v = v
             )
         }
         ast::ExprKind::Index(base, index) => {
+            // A string is indexed by character, not by list element. It was
+            // emitted as a list access, which reads a `void *` as an element
+            // array and does not compile for a string. Refusing it by name is
+            // better than emitting C that happens to compile and means
+            // something else.
+            if string_base_type(base, signatures, lists).is_some() {
+                return Err(Unsupported::Construct(
+                    "indexing a string".to_string(),
+                    e.pos,
+                ));
+            }
             // The element type comes from the name the base is bound to,
             // recorded when that declaration was emitted, or from the base
             // itself when it is a literal or a repeat. It is never inferred
@@ -531,30 +666,174 @@ fn emit_expr(
             let elem = match &base.kind {
                 ast::ExprKind::Ident(n) => lists
                     .get(&param_name(n))
-                    .copied()
+                    .cloned()
                     .or_else(|| list_element_type(base))
-                    .unwrap_or("int64_t"),
-                _ => list_element_type(base).unwrap_or("int64_t"),
+                    .unwrap_or_else(|| "int64_t".to_string()),
+                _ => list_element_type(base).unwrap_or_else(|| "int64_t".to_string()),
             };
             let b = emit_expr(base, lists, signatures)?;
             let i = emit_expr(index, lists, signatures)?;
             format!("((({c} *)({b}).items)[({i})])", c = elem, b = b, i = i)
         }
-        ast::ExprKind::Field(base, _) => {
-            // A field read on a struct the emitter emitted inline.
-            let _ = base;
-            return Err(Unsupported::Construct(
-                "a field read on a named struct".to_string(),
-                e.pos,
+        ast::ExprKind::Field(base, field) => {
+            // `Shape.empty` parses as a field read, because the parser cannot
+            // tell a field from a variant without knowing the types. The base
+            // names a declared enum here, so it is a variant with no payload
+            // rather than a field read.
+            if let ast::ExprKind::Ident(ty) = &base.kind {
+                if is_declared_enum(ty) {
+                    let index = enum_variant_index(ty, field).ok_or_else(|| {
+                        Unsupported::Construct(
+                            format!("the variant `{v}` of enum `{t}`", v = field, t = ty),
+                            e.pos,
+                        )
+                    })?;
+                    let c = format!("C{}", param_name(ty));
+                    return Ok(format!(
+                        "(({c}){{.tag = 0, .variant = {i}}})",
+                        c = c,
+                        i = index
+                    ));
+                }
+            }
+            // A field read on a declared struct. The base is a plain value, not
+            // a pointer, so the field is read directly.
+            let b = emit_expr(base, lists, signatures)?;
+            return Ok(format!("({b}).{f}", b = b, f = param_name(field)));
+        }
+        // A struct is built as a compound literal of its generated C struct,
+        // which is what a record expression is in v0.1.
+        ast::ExprKind::Record { ty, fields } => {
+            let c = format!("C{}", param_name(ty));
+            let mut inits: Vec<String> = vec![".tag = 0".to_string()];
+            for (name, value) in fields {
+                inits.push(format!(
+                    ".{f} = {v}",
+                    f = param_name(name),
+                    v = emit_expr(value, lists, signatures)?
+                ));
+            }
+            return Ok(format!(
+                "(({c}){{{inits}}})",
+                c = c,
+                inits = inits.join(", ")
             ));
         }
-        ast::ExprKind::Tuple(_) => {
-            return Err(Unsupported::Construct("a tuple".to_string(), e.pos));
+        // A variant with no payload, a positional payload, or named fields all
+        // become the tagged struct with its payloads in p0, p1 and p2.
+        ast::ExprKind::Variant { ty, variant }
+        | ast::ExprKind::VariantCall { ty, variant, .. }
+        | ast::ExprKind::VariantRecord { ty, variant, .. } => {
+            let index = enum_variant_index(ty, variant).ok_or_else(|| {
+                Unsupported::Construct(format!("the variant `{}` of enum `{}`", variant, ty), e.pos)
+            })?;
+            // The payloads are stored in an array typed by the variant's
+            // declarations, so a Float payload is stored as a double.
+            let types = variant_payload_types(ty, variant);
+            let mut values: Vec<String> = Vec::new();
+            match &e.kind {
+                ast::ExprKind::VariantCall { args, .. } => {
+                    for a in args {
+                        values.push(emit_expr(a, lists, signatures)?);
+                    }
+                }
+                ast::ExprKind::VariantRecord { fields, .. } => {
+                    for (_, value) in fields {
+                        values.push(emit_expr(value, lists, signatures)?);
+                    }
+                }
+                _ => {}
+            }
+            let c = format!("C{}", param_name(ty));
+            let mut inits = vec![".tag = 0".to_string(), format!(".variant = {index}")];
+            if !values.is_empty() {
+                let vals = values.join(", ");
+                let first = types
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "int64_t".to_string());
+                if types.iter().any(|t| *t != first) {
+                    return Err(Unsupported::Construct(
+                        format!(
+                            "a `{}` variant whose payload fields have different types",
+                            variant
+                        ),
+                        e.pos,
+                    ));
+                }
+                inits.push(format!(
+                    ".payload = (({t}[]){{{vals}}})",
+                    t = first,
+                    vals = vals
+                ));
+            } else {
+                inits.push(".payload = 0".to_string());
+            }
+            return Ok(format!(
+                "(({c}){{{inits}}})",
+                c = c,
+                inits = inits.join(", ")
+            ));
         }
-        ast::ExprKind::If { cond: _, .. } => {
-            return Err(Unsupported::Construct(
-                "an if expression".to_string(),
-                e.pos,
+        ast::ExprKind::Tuple(items) => {
+            if !(2..=4).contains(&items.len()) {
+                return Err(Unsupported::Construct(
+                    format!("a tuple of {} elements", items.len()),
+                    e.pos,
+                ));
+            }
+            let parts: Result<Vec<String>, Unsupported> = items
+                .iter()
+                .map(|i| emit_expr(i, lists, signatures))
+                .collect();
+            let parts = parts?;
+            let inits: Vec<String> = parts
+                .iter()
+                .enumerate()
+                .map(|(i, p)| format!(".f{i} = {p}"))
+                .collect();
+            format!(
+                "((CTuple{n}){{{inits}}})",
+                n = items.len(),
+                inits = inits.join(", ")
+            )
+        }
+        ast::ExprKind::Match { scrutinee, arms } => {
+            return emit_match(e, scrutinee, arms, lists, signatures);
+        }
+        // An `if` used as a value is a GNU statement expression: the condition
+        // is assigned to a declaration, and the two branches are selected with
+        // a conditional operator on it. The type is the type of the branches,
+        // which is what `expr_type_of` gives.
+        ast::ExprKind::If {
+            cond,
+            then,
+            otherwise,
+        } => {
+            let ty = expr_type_of(e, signatures);
+            let c = format!("__vortex_c{}_{}", e.pos.line, e.pos.col);
+            let t = emit_block_expr(then, lists, signatures)?;
+            let o = match otherwise {
+                Some(alt) => match alt.as_ref() {
+                    ast::Else::Block(b) => emit_block_expr(b, lists, signatures)?,
+                    ast::Else::If(inner) => {
+                        // An else-if chain nests, so the inner if is emitted the
+                        // same way and becomes the false branch.
+                        emit_expr(&inner.node, lists, signatures)?
+                    }
+                },
+                None => format!("({ty})0", ty = ty),
+            };
+            // A statement expression needs its braces and a trailing
+            // semicolon on the final expression, or gcc reports
+            // "expected ')' before the declared name".
+            return Ok(format!(
+                "({{ {ty} {c} = {cond}; ({c} ? {t} : {o}); }})",
+                ty = ty,
+                c = c,
+                cond = emit_expr(cond, lists, signatures)?,
+                t = t,
+                o = o
             ));
         }
         other => {
@@ -567,6 +846,326 @@ fn emit_expr(
     })
 }
 
+/// Emits a block used as an expression, which is its trailing expression
+/// wrapped in a statement expression so it is an expression in C.
+fn emit_block_expr(
+    b: &ast::Block,
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> Result<String, Unsupported> {
+    match &b.tail {
+        Some(t) => emit_expr(t, lists, signatures),
+        None => Err(Unsupported::Construct(
+            "a block with no trailing expression used as a value".to_string(),
+            b.pos,
+        )),
+    }
+}
+
+/// Emits `for x in e { ... }`, which walks a list.
+///
+/// A list is a pointer and a length, so the loop is an index over its elements
+/// reading at the element type recorded for that list. A string is walked by
+/// byte, which is what the interpreters do; the element type is `char`.
+/// A number that keeps two temporaries apart when two loops on the same line
+/// each declare one.
+fn e_pos_of_var(_var: &str) -> usize {
+    0
+}
+
+fn emit_for_in(
+    out: &mut String,
+    _stmt: &ast::Stmt,
+    var: &str,
+    source: &ast::Expr,
+    body: &ast::Block,
+    depth: usize,
+    ret: &str,
+    lists: &mut HashMap<String, String>,
+    signatures: &Signatures,
+) -> Result<(), Unsupported> {
+    let src = emit_expr(source, lists, signatures)?;
+    let elem = match &source.kind {
+        ast::ExprKind::Str(_) => "char".to_string(),
+        _ => match &source.kind {
+            ast::ExprKind::Ident(n) => lists
+                .get(&param_name(n))
+                .cloned()
+                .or_else(|| list_element_type(source))
+                .unwrap_or_else(|| "int64_t".to_string()),
+            _ => list_element_type(source).unwrap_or_else(|| "int64_t".to_string()),
+        },
+    };
+    indent(out, depth);
+    // The collection is bound once so the loop is not recomputing it, and the
+    // loop variable reads its element at the recorded element type.
+    indent(out, depth);
+    let collection = format!("__vortex_for{}_{}", e_pos_of_var(var), param_name(var));
+    let _ = writeln!(out, "CList {c} = {s};", c = collection, s = src);
+    let _ = writeln!(
+        out,
+        "for (int64_t __vortex_i = 0; __vortex_i < {c}.len; __vortex_i++) {{",
+        c = collection
+    );
+    indent(out, depth + 1);
+    let _ = writeln!(
+        out,
+        "{t} {v} = (({t} *)({c}.items))[__vortex_i];",
+        t = elem,
+        v = param_name(var),
+        c = collection
+    );
+    emit_block(out, body, depth + 1, ret, lists, signatures)?;
+    indent(out, depth);
+    let _ = writeln!(out, "}}");
+    Ok(())
+}
+
+/// Emits a `match` as a GNU statement expression.
+///
+/// A statement expression is `({ declarations; value; })`, which is an
+/// expression in C and therefore usable where a `let` initialiser is. The
+/// semantics are the ones the tree interpreter implements: the arms are tried
+/// in order and the first that matches supplies the value, so this emits a
+/// chain of ternaries with the arm bindings declared before it.
+fn emit_match(
+    e: &ast::Expr,
+    scrutinee: &ast::Expr,
+    arms: &[ast::Arm],
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> Result<String, Unsupported> {
+    if arms.is_empty() {
+        return Err(Unsupported::Construct(
+            "a match with no arms".to_string(),
+            e.pos,
+        ));
+    }
+    let ty = expr_type_of(e, signatures);
+    let subject = emit_expr(scrutinee, lists, signatures)?;
+
+    // Each arm contributes one declaration and one test. The first matching arm
+    // is chosen by testing in order and stopping, which is what nested
+    // ternaries do.
+    let mut value = format!("({ty})0", ty = ty);
+    for arm in arms.iter().rev() {
+        let test = match_pattern_test(&arm.patterns, &subject, lists, signatures)?;
+        // One statement expression per arm, so a name bound in one arm is not
+        // visible in another and two arms may bind the same name.
+        // The pattern's bindings become ordinary C locals before the body, so
+        // the body needs no rewriting. The statement expression's value is its
+        // last expression, which is the body.
+        let decls = declare_pattern_bindings(&arm.patterns, &subject);
+        let body = emit_expr(&arm.body, lists, signatures)?;
+        // With no declarations there is nothing for a statement expression to
+        // do, so the body is emitted on its own.
+        let arm_expr = if decls.trim().is_empty() {
+            format!("({body})")
+        } else {
+            format!("({{ {decls} {body}; }})")
+        };
+        value = if test.is_empty() {
+            arm_expr
+        } else {
+            format!("(({test}) ? {arm_expr} : {value})")
+        };
+    }
+    Ok(format!("({{ {value}; }})"))
+}
+
+/// The C boolean expression testing one arm's patterns against the subject.
+///
+/// An empty result means the arm always matches, which is what a wildcard or a
+/// binding-only pattern is. Several patterns separated by `|` are tested in
+/// order and the first that matches wins.
+fn match_pattern_test(
+    patterns: &[ast::Pattern],
+    subject: &str,
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> Result<String, Unsupported> {
+    if patterns.is_empty() {
+        return Ok(String::new());
+    }
+    let mut tests = Vec::with_capacity(patterns.len());
+    for p in patterns {
+        match_pattern_test_one(p, subject, lists, signatures).map(|t| tests.push(t))?;
+    }
+    if tests.is_empty() {
+        return Ok(String::new());
+    }
+    if tests.len() == 1 {
+        return Ok(tests.remove(0));
+    }
+    Ok(format!("({})", tests.join(" || ")))
+}
+
+fn match_pattern_test_one(
+    p: &ast::Pattern,
+    subject: &str,
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> Result<String, Unsupported> {
+    match &p.kind {
+        ast::PatternKind::Wildcard => Ok(String::new()),
+        ast::PatternKind::Binding(_) => Ok(String::new()),
+        ast::PatternKind::Literal(c) => {
+            let v = emit_expr(c, lists, signatures)?;
+            Ok(format!("(({s}) == ({v}))", s = subject))
+        }
+        ast::PatternKind::Tuple(items) => {
+            let mut tests = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                let elem = format!("({s}).f{i}", s = subject);
+                let t = match_pattern_test_one(item, &elem, lists, signatures)?;
+                // A wildcard or a bare binding contributes no test of its own,
+                // so an empty one is dropped rather than joined as nothing.
+                if !t.is_empty() {
+                    tests.push(t);
+                }
+            }
+            if tests.is_empty() {
+                return Ok(String::new());
+            }
+            if tests.len() == 1 {
+                return Ok(tests.remove(0));
+            }
+            Ok(format!("({})", tests.join(" && ")))
+        }
+        ast::PatternKind::Variant {
+            ty: type_name,
+            variant,
+            ..
+        } => {
+            let mangled = param_name(type_name);
+            let index = enum_variant_index(type_name, variant).ok_or_else(|| {
+                Unsupported::Construct(
+                    format!(
+                        "the variant `{}` of an enum the emitter does not know",
+                        variant
+                    ),
+                    p.pos,
+                )
+            })?;
+            let _ = mangled;
+            Ok(format!(
+                "(({s}).tag == 0 && ({s}).variant == {i})",
+                s = subject,
+                i = index
+            ))
+        }
+    }
+}
+
+/// The C declarations a pattern's bindings need, so an arm body can refer to
+/// them by name.
+///
+/// A tuple pattern binds element by element, and a variant pattern binds its
+/// payloads, which the generated struct carries in p0, p1 and p2.
+fn declare_pattern_bindings(patterns: &[ast::Pattern], subject: &str) -> String {
+    let mut out = String::new();
+    for p in patterns {
+        declare_pattern_bindings_one(p, subject, &mut out);
+    }
+    out
+}
+
+fn declare_pattern_bindings_one(p: &ast::Pattern, subject: &str, out: &mut String) {
+    match &p.kind {
+        ast::PatternKind::Binding(name) => {
+            out.push_str(&format!(
+                "int64_t {n} = {s}; ",
+                n = param_name(name),
+                s = subject
+            ));
+        }
+        ast::PatternKind::Tuple(items) => {
+            for (i, item) in items.iter().enumerate() {
+                let elem = format!("({s}).f{i}", s = subject);
+                declare_pattern_bindings_one(item, &elem, out);
+            }
+        }
+        ast::PatternKind::Variant {
+            ty,
+            variant,
+            bindings,
+            ..
+        } => {
+            for (i, name) in bindings.iter().enumerate() {
+                let c = variant_payload_type(ty, variant, i);
+                let slot = format!("((({t} *)({s}).payload)[{i}])", t = c, s = subject, i = i);
+                out.push_str(&format!(
+                    "{c} {n} = {slot}; ",
+                    n = param_name(name),
+                    slot = slot
+                ));
+            }
+        }
+        ast::PatternKind::Wildcard | ast::PatternKind::Literal(_) => {}
+    }
+}
+
+/// Whether a name is a declared enum, which is how a variant is told from a
+/// struct field after parsing.
+fn is_declared_enum(name: &str) -> bool {
+    let mangled = param_name(name);
+    ENUM_VARIANTS.with(|e| e.borrow().iter().any(|(n, _)| *n == mangled))
+}
+
+/// Every payload C type of a variant, in declaration order.
+fn variant_payload_types(enum_name: &str, variant: &str) -> Vec<String> {
+    let mangled = param_name(enum_name);
+    ENUM_VARIANTS.with(|e| {
+        e.borrow()
+            .iter()
+            .find(|(n, _)| *n == mangled)
+            .and_then(|(_, variants)| {
+                variants
+                    .iter()
+                    .find(|(v, _)| v == variant)
+                    .map(|(_, types)| types.clone())
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// The C type of a variant's payload at a position, so a binding reads the
+/// payload slot at the type the enum declared rather than always as an
+/// int64_t.
+fn variant_payload_type(enum_name: &str, variant: &str, slot: usize) -> String {
+    let mangled = param_name(enum_name);
+    ENUM_VARIANTS.with(|e| {
+        e.borrow()
+            .iter()
+            .find(|(n, _)| *n == mangled)
+            .and_then(|(_, variants)| {
+                variants
+                    .iter()
+                    .find(|(v, _)| v == variant)
+                    .and_then(|(_, types)| types.get(slot).cloned())
+            })
+            .unwrap_or_else(|| "int64_t".to_string())
+    })
+}
+
+/// The index of a named variant within its enum, which the generated tag
+/// compares against.
+fn enum_variant_index(enum_name: &str, variant: &str) -> Option<usize> {
+    ENUM_VARIANTS.with(|e| {
+        e.borrow()
+            .iter()
+            .find(|(en, _)| en == enum_name)
+            .and_then(|(_, variants)| variants.iter().position(|(v, _)| v == variant))
+    })
+}
+
+thread_local! {
+    /// Each declared enum, with its variants in declaration order and the C
+    /// type of each payload.
+    static ENUM_VARIANTS: std::cell::RefCell<Vec<(String, Vec<(String, Vec<String>)>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Emits a binary operation, choosing between the arithmetic form and the
 /// string concatenation form.
 ///
@@ -577,10 +1176,11 @@ fn emit_binary(
     lhs: &ast::Expr,
     rhs: &ast::Expr,
     pos: crate::span::Pos,
-    lists: &HashMap<String, &'static str>,
+    lists: &HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<String, Unsupported> {
-    let string_plus = matches!(op, ast::BinOp::Add) && (is_string_expr(lhs) || is_string_expr(rhs));
+    let string_plus = matches!(op, ast::BinOp::Add)
+        && (is_string_expr_in(lhs, lists) || is_string_expr_in(rhs, lists));
     if string_plus {
         return Ok(format!(
             "vortex_str_concat({}, {})",
@@ -605,6 +1205,17 @@ fn emit_binary(
 /// arithmetic rather than concatenation. An expression whose type is not known
 /// here is treated as a scalar, which is right for every builtin that returns
 /// one.
+fn is_string_expr_in(e: &ast::Expr, lists: &HashMap<String, String>) -> bool {
+    match &e.kind {
+        ast::ExprKind::Ident(n) => matches!(
+            lists.get(&param_name(n)).map(|s| s.as_str()),
+            Some("const char *")
+        ),
+        ast::ExprKind::Paren(inner) => is_string_expr_in(inner, lists),
+        _ => is_string_expr(e),
+    }
+}
+
 fn is_string_expr(e: &ast::Expr) -> bool {
     match &e.kind {
         ast::ExprKind::Str(_) => true,
@@ -660,10 +1271,58 @@ fn c_escape(s: &str) -> String {
 /// The printing is what makes the compiled answer comparable with the other two
 /// engines, which print rather than return.
 pub fn emit_program(
-    functions: &[Spanned<ast::FnDecl>],
+    items: &[ast::Item],
     entry: &str,
     args: &[String],
 ) -> Result<String, Unsupported> {
+    let functions: Vec<Spanned<ast::FnDecl>> = items
+        .iter()
+        .filter_map(|i| match i {
+            ast::Item::Function(f) => Some(f.clone()),
+            _ => None,
+        })
+        .collect();
+    let functions = &functions[..];
+
+    // Record the struct and enum names, so c_type can map a declared type to
+    // its generated C name and refuse one the program does not declare.
+    {
+        let mut names = Vec::new();
+        let mut variants = Vec::new();
+        for item in items {
+            match item {
+                ast::Item::Struct(sd) => names.push(param_name(&sd.node.name)),
+                ast::Item::Enum(ed) => {
+                    let n = param_name(&ed.node.name);
+                    names.push(n.clone());
+                    variants.push((
+                        n,
+                        ed.node
+                            .variants
+                            .iter()
+                            .map(|v| {
+                                // A variant's payloads have declared types, and
+                                // a binding has to read the payload slot at that
+                                // type rather than always as an int64_t.
+                                let types: Vec<String> = v
+                                    .payloads
+                                    .iter()
+                                    .map(|t| c_type(t).unwrap_or_else(|| "int64_t".to_string()))
+                                    .chain(v.named.iter().map(|f| {
+                                        c_type(&f.ty).unwrap_or_else(|| "int64_t".to_string())
+                                    }))
+                                    .collect();
+                                (v.name.clone(), types)
+                            })
+                            .collect(),
+                    ));
+                }
+                ast::Item::Function(_) => {}
+            }
+        }
+        DECLARED.with(|d| *d.borrow_mut() = names);
+        ENUM_VARIANTS.with(|v| *v.borrow_mut() = variants);
+    }
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -777,6 +1436,73 @@ pub fn emit_program(
         let _ = writeln!(out, "");
     }
     let _ = writeln!(out, "");
+    // Structs and enums, each as a tagged C struct so `match` can test which
+    // one a value is. A struct is a tag plus its fields; an enum is a tag, a
+    // variant index and up to two payload slots, which covers the positional
+    // and named payload shapes v0.1 has.
+    for item in items {
+        match item {
+            ast::Item::Struct(sd) => {
+                let fields: Vec<String> = sd
+                    .node
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            "{} {};",
+                            c_type(&f.ty).unwrap_or_else(|| "void *".to_string()),
+                            param_name(&f.name)
+                        )
+                    })
+                    .collect();
+                let _ = writeln!(out, "typedef struct {{");
+                let _ = writeln!(out, "    int64_t tag;");
+                for f in fields {
+                    let _ = writeln!(out, "    {f}");
+                }
+                let _ = writeln!(out, "}} C{};", param_name(&sd.node.name));
+            }
+            ast::Item::Enum(ed) => {
+                let _ = writeln!(out, "typedef struct {{");
+                let _ = writeln!(out, "    int64_t tag;");
+                let _ = writeln!(out, "    int64_t variant;");
+                // Payload slots carry the variant's declared types, which
+                // differ per variant, so they are untyped storage and each
+                // access casts. This is the same choice CList makes.
+                let _ = writeln!(out, "    void *payload;");
+                let _ = writeln!(out, "}} C{};", param_name(&ed.node.name));
+                for (i, _v) in ed.node.variants.iter().enumerate() {
+                    let _ = writeln!(
+                        out,
+                        "static const int64_t {n}_{i} = {i};",
+                        n = param_name(&ed.node.name),
+                        i = i
+                    );
+                }
+            }
+            ast::Item::Function(_) => {}
+        }
+    }
+    let _ = writeln!(out, "");
+
+    // Tuples, which `match` needs in order to compare a multi element subject.
+    // A tuple of n elements is a distinct struct, so the generated C has a
+    // family of them rather than one variable length array.
+    for n in 2..=4 {
+        let fields: Vec<String> = (0..n)
+            .map(|i| {
+                let t = match i {
+                    0 => "int64_t",
+                    1 => "double",
+                    2 => "const char *",
+                    _ => "void *",
+                };
+                format!("{} f{i};", t)
+            })
+            .collect();
+        let _ = writeln!(out, "typedef struct {{ {} }} CTuple{n};", fields.join(" "));
+    }
+    let _ = writeln!(out, "");
     let _ = writeln!(
         out,
         "/* Vortex string concatenation, which owns its result. */"
@@ -820,7 +1546,11 @@ pub fn emit_program(
     for f in functions {
         signatures.insert(
             f.node.name.clone(),
-            f.node.ret.as_ref().and_then(c_type).unwrap_or("int64_t"),
+            f.node
+                .ret
+                .as_ref()
+                .and_then(c_type)
+                .unwrap_or_else(|| "int64_t".to_string()),
         );
     }
     for f in functions {
@@ -882,7 +1612,7 @@ pub fn emit_program(
     let _ = writeln!(out, "    {} r = vortex_c_entry();", entry_c);
     // A program that prints its own answer has already written it, so the
     // returned value is written after a marker the harness can strip.
-    match entry_c {
+    match entry_c.as_str() {
         "double" => {
             let _ = writeln!(out, "    fprintf(stderr, \"vortex_returned %.6f\\n\", r);");
         }
@@ -906,7 +1636,7 @@ pub fn emit_program(
 /// It is the entry function's declared return type, so a 64 bit `Int` is not
 /// truncated on the way out. Casting it through `int` gave a wrong answer that
 /// agreed with nothing.
-fn entry_c_type(functions: &[Spanned<ast::FnDecl>], entry: &str) -> &'static str {
+fn entry_c_type(functions: &[Spanned<ast::FnDecl>], entry: &str) -> String {
     functions
         .iter()
         .find(|f| f.node.name == entry)
@@ -916,7 +1646,7 @@ fn entry_c_type(functions: &[Spanned<ast::FnDecl>], entry: &str) -> &'static str
         // as int64_t made the generated entry `return f();` on a void
         // function, which gcc at -O2 accepts with a warning and gcc at -O0
         // rejects.
-        .unwrap_or("void")
+        .unwrap_or_else(|| "void".to_string())
 }
 
 /// The names reachable from `entry`, which is the set worth emitting.

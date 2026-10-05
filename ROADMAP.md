@@ -56,7 +56,7 @@ Merged in pull request #10. The backend is an ahead-of-time compiler over
 `crates/vortexc/src/ir.rs`, both named VM changes measured and reverted, linear
 ownership kept, no concurrency.
 
-## Stage 6, active: enforce linear ownership, then compile one real function
+## Stage 6, complete: enforce linear ownership, then compile one real function
 
 Scope: make the memory model a property rather than a document, then build the
 first piece of the compiler stage 5 decided on.
@@ -103,3 +103,81 @@ Move enforcement is also partial. A move by assignment and a move out of a
 live struct field are not tracked. Both are limits of what the lowering pass
 decides syntactically today.
 
+## Stage 7, complete: carry the sieve workload through the compiler
+
+Scope: extend the emitter until it carries the real benchmark workload, then
+publish the first honest compiled number rather than a partial one.
+
+Acceptance criteria:
+
+- [x] List construction and indexing, `if` expressions, `match` and ranges each
+      land one at a time, each with a test.
+- [x] The compiled row says what it covers. It was labelled `sieve only`
+      because the matrix half disagreed, and the label was accurate when
+      written.
+- [x] The guard checks every quoted number against the committed transcript.
+
+`STAGE7.md` records the result.
+
+## Stage 8, complete: fix the compiled float path and earn the row
+
+Scope: four defects kept the compiled path from running the whole workload.
+
+Acceptance criteria:
+
+- [x] All three paths print `checksum 1179908154 3314.003906`.
+- [x] The compiled row in `BENCHMARKS.md` is a full workload row with no
+      sieve-only label, and the guard requires that checksum on it.
+- [x] The label removal is recorded in `STAGE7.md`, because removing a caveat is
+      as much a claim as adding one.
+
+`FLOAT-DEFECT.md` records the four defects.
+
+## Stage 9, complete: measure register allocation
+
+Scope: measure the claim that the emitter spills every value to a stack slot.
+
+Acceptance criteria:
+
+- [x] Before and after on the same workload, five repeats, raw transcripts.
+- [x] The result compared against the committed spread, not a remembered number.
+- [x] A gain inside the noise is reverted, and the revert recorded.
+
+The premise did not hold: gcc at -O2 already keeps every live value in a
+register, so there was nothing to remove. `STAGE9.md` records it.
+
+## Stage 10, complete: test stage 9's prediction at -O0
+
+Scope: stage 9 predicted two gaps only did harm because gcc hid them. That was
+a prediction, so it is measured.
+
+Acceptance criteria:
+
+- [x] The compiled path at -O0 reports its checksum, and any mismatch is narrowed
+      by reduction.
+- [x] `-O0` and `-O2` measured with five repeats each, transcript committed.
+- [x] The `-O0` figure labelled as gcc's, not as Vortex performance.
+
+The prediction held on correctness and was too pessimistic on cost. Building the
+examples at -O0 also found a real defect that -O2 was repairing. `STAGE10.md`
+records it.
+
+## Stage 11, active: emit `match` and close what the emitter cannot carry
+
+Scope: a language whose compiled path cannot compile three of its own four
+examples is not usable.
+
+Acceptance criteria:
+
+- [x] `match` emitted with the semantics the tree interpreter implements.
+- [x] String indexing refused by name rather than emitted as a list access.
+- [x] Every example that compiles produces identical output on the compiled
+      path, the tree interpreter and the VM, at `-O2` and at `-O0`.
+- [x] 207 tests on each engine still pass, plus new tests for what this adds.
+- [x] An inventory of what else the tree interpreter supports and the emitter
+      does not, so the next stage knows the size of the gap.
+- [x] Any example that still does not compile is named with its reason.
+
+No performance figure is claimed and none reaches `BENCHMARKS.md`.
+`STAGE11.md` records the result, including why the guard has nothing to check
+in it and what is checked instead.
