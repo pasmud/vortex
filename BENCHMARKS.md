@@ -72,11 +72,16 @@ facts about a stage 4 interpreter and a stage 4 VM, not about the design of the
 language, and not about where it could end up.
 
 The compiled path is about 2.5 times slower than the C baseline and about 78
-times faster than the tree interpreter on the same program. That gap to C is the
-honest headline for stage 8: the emitter still spills every value to a slot in
-memory and never allocates a register, which is the largest single item
-between a compiled Vortex program and a hand written C one. It is not measured
-yet, so it is not claimed here.
+times faster than the tree interpreter on the same program.
+
+Stage 8 named register allocation as the largest single item in that gap,
+because the emitter was assumed to spill every value to a stack slot. **Stage 9
+measured that and it is not true.** The emitter writes a Vortex local as a C
+local, and gcc allocates registers for it: the emitted assembly for `sieve_sum`
+has no stack reference at all and `matrix_work` has none either. There is no
+spill traffic for a register allocation pass to remove. `STAGE9.md` records the
+assembly, the before and after measurements, and what the gap actually consists
+of instead.
 
 The Vortex matrix half needed the `as` cast, which stage 4 added. Before it, the
 Vortex row covered the sieve only and the table said so. Stage 8 fixed four
