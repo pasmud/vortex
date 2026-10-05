@@ -211,6 +211,18 @@ read. When the owner's scope ends, the value is deallocated immediately and
 deterministically. Values that are scalars or aggregates of scalars are `Copy`
 and are duplicated on assignment instead of moved.
 
+**Enforced since stage 6.** Reading a binding whose value has been moved is an
+error naming the binding, the position and this section. The lowering pass
+records a move when an aggregate is handed to a call, and a block carries its
+moved flags out to the enclosing scope, so a move inside a loop body outlives the
+body and a second move there is caught.
+
+Two forms are deliberately **not** moves. A scalar is `Copy`, so `take(n)`
+followed by `n` is fine. A field read is not a move either, because the struct
+keeps its own fields and reading one copies it, so `p.x` followed by `p.y` is
+fine. Both were false positives while this was being written and both are pinned
+by tests.
+
 ### 7.1 Why this and not the alternatives
 
 **Not a borrow checker.** A borrow checker needs two features that interact
@@ -263,6 +275,13 @@ claimed to exist.
 Vortex v0.1 has no `unsafe`. If a later stage adds it, it is restricted to
 modules that also declare foreign interfaces, and this section must describe how
 such a module is reviewed. That work is not scheduled yet.
+
+Stage 6 named one candidate. Holding frame slots uninitialised and handing out
+references is what would remove the `Value` copy on every load and store in the
+VM, and it is the change most likely to make a bytecode VM competitive. It is
+deferred rather than done here, because it would be the first `unsafe` in the
+compiler and that needs its own review rather than appearing inside a stage
+about something else.
 
 ## 8. Syntax and semantics
 
@@ -337,10 +356,11 @@ building the benchmark workload.
   but there is no way to write `none`, `some`, `ok` or `err` yet.
 - **No generics and no traits.** Section 6.3 describes monomorphisation, and
   the parser has no generic syntax, so nothing about it is implemented.
-- **Move semantics are not yet checked.** Section 7 states a move model, but a
-  use after a move still compiles. Stage 5 decided to keep the model and
-  `DECISION.md` records that enforcement is the next piece of work. The
-  behaviour that does exist is demonstrated by `examples/ownership.vx`.
+- **Move semantics are checked.** Section 7 is enforced since stage 6: a use
+  after a move and a second binding of a moved value are both errors.
+  `examples/ownership.vx` demonstrates the behaviour and
+  `crates/vortexc/tests/ownership.rs` holds the nine counterexamples, five of
+  which must keep compiling.
 
 Modules come later. `import` is reserved in v0.1 so that adding it does not
 break programs.
