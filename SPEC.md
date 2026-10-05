@@ -354,7 +354,7 @@ The optimisation strategy for the stages ahead is:
 `BENCHMARKS.md` now carries a **recorded Vortex result**. Stage 3 writes the
 sieve in Vortex, its checksum matches the C and Rust baselines, and the raw
 harness output is committed with the machine and the compiler versions. On that
-measurement Vortex is roughly 155 times slower than C, which is a statement
+measurement Vortex is roughly 273 times slower than C, which is a statement
 about a tree interpreter with no bytecode and not about the design of the
 language. Nothing here claims Vortex is fast; it does not yet have the evidence
 to. Stage 4's first job is that number.
@@ -382,10 +382,10 @@ would be dead work. Stage 4 measured it:
 
 | Engine | Wall clock on the benchmark workload |
 | --- | --- |
-| Vortex, tree interpreter | 3256 ms |
-| Vortex, bytecode VM | 5015 ms |
+| Vortex, tree interpreter | 3217 ms |
+| Vortex, bytecode VM | 4913 ms |
 
-**The VM is about 1.5 times slower than the tree interpreter.** It is kept for
+**The VM is about 1.53 times slower than the tree interpreter.** It is kept for
 one reason and one reason only: it is a second consumer of the lowered form, so
 `crates/vortexc/src/ir.rs` is exercised by a second executor, and the stage 2
 and 3 test suites run against it unchanged. That is what found the loop defects

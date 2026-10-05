@@ -12,8 +12,8 @@ same work was measured rather than being asked to take it on trust.
 | --- | --- | --- | --- | --- |
 | C | 18 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
 | Rust | 18 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
-| Vortex, tree interpreter | 3256 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
-| Vortex, bytecode VM | 5015 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Vortex, tree interpreter | 3217 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Vortex, bytecode VM | 4913 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
 
 Raw harness output for the tree interpreter row is committed at
 `bench/results/stage3-tree-interpreter.txt`, and for both Vortex rows at
@@ -23,9 +23,16 @@ Raw harness output for the tree interpreter row is committed at
 
 ### The VM is slower than the tree interpreter
 
-**The bytecode VM is about 1.5 times slower than the tree interpreter on this
-workload: 5015 ms against 3256 ms.** That is a disappointing number and it is
-published rather than omitted, because it is a fact about this implementation.
+**The bytecode VM is about 1.53 times slower than the tree interpreter on
+this workload: 4913 ms against 3217 ms.** That is a disappointing number and
+it is published rather than omitted, because it is a fact about this
+implementation.
+
+Every figure in this table is copied from the committed transcript above, and
+`scripts/check-benchmarks.sh` fails if a number here is not the number the
+transcript records. That check exists because an earlier revision of this file
+was written by hand from one run while the transcript was from another, and all
+four documented numbers were the faster ones.
 
 The reason is not the dispatch the VM was built to remove. A tree walk in Rust
 recurses, so each Vortex call becomes native calls that the optimiser already
@@ -41,10 +48,10 @@ that would change it are a frame-allocated operand stack rather than a `Vec`, an
 avoiding the `Value` clone on every store and load. Neither has been tried, so
 neither is claimed.
 
-**No Vortex speed claim is made beyond this table.** Vortex is roughly 180 times
-slower than C here. That is a fact about a stage 4 tree interpreter and a stage 4
-bytecode VM, not about the design of the language, and not about where it could
-end up.
+**No Vortex speed claim is made beyond this table.** Vortex is roughly
+273 times slower than C here. That is a fact about a stage 4 tree
+interpreter and a stage 4 bytecode VM, not about the design of the language, and
+not about where it could end up.
 
 The Vortex matrix half needed the `as` cast, which stage 4 added. Before it, the
 Vortex row covered the sieve only and the table said so. It no longer needs to,
@@ -108,16 +115,16 @@ here, with the raw output committed. Estimates and projections are not evidence.
 A result is added by a person, not by the harness. `bench/run.sh` prints; it
 does not write to this file. `scripts/check-benchmarks.sh` checks that the
 machine specification and the committed raw output are present, that the
-recorded numbers appear in this file, and that all three rows of the committed
+recorded numbers appear in this file, and that all four rows of the committed
 output carry the same checksum.
 
 ## Why one workload is not enough
 
 A language comparison resting on one workload proves very little, and this table
-proves that directly: it says the tree interpreter is 155 times slower than C on
-a sieve, which says nothing about integer arithmetic in general, because the
-dominant cost here is the interpreter's dispatch and its list handling rather
-than the arithmetic. Later stages add more than one workload before any
+proves that directly: it says the bytecode VM is about 1.53 times slower
+than the tree interpreter, and about 273 times slower than C, on a sieve.
+That says nothing about integer arithmetic in general, because the dominant cost
+here is the interpreter's execution model rather than the arithmetic. Later stages add more than one workload before any
 conclusion is drawn about relative speed.
 
 ## Running the harness
