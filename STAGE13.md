@@ -102,11 +102,13 @@ three-payload positional variant.
 | indexing a tuple | yes | refused by name | **closed, was a gcc error** |
 | a function returning a struct with a mixed-case name | yes | yes, checked after the review | closed, was a gcc error |
 | two `for ..in` loops in one function | yes | yes, each scoped | closed, was a gcc error |
-| `+` on a field read of a declared struct | yes | refused by name | open, found while fixing the review |
+| `+` on a field read of a declared struct | yes | yes, at the field's declared type | closed in stage 14 |
 | a list of a `Str` built by a repeat, `[ "x"; 2 ]` | yes | refused by name: `indexing a string` | closed, was untested |
 | a nested struct, a struct holding a struct | yes | yes, checked while writing this | closed |
 | a function returning a declared struct or enum | yes | yes, checked while writing this | closed, was a gcc error |
 | a `match` on a struct value | no | not expressible | closed, the parser has no syntax for it |
+| indexing a string | yes | yes, as a `Char` | closed in stage 14 |
+| a call inside a list literal, repeat or variant | yes | yes | closed in stage 14 |
 
 **No construct in this document now fails with a C compiler error.** That claim
 was **false when this document was first written**, and the first external

@@ -202,6 +202,7 @@ fn param_name(name: &str) -> String {
 const BUILTIN_RENAMES: &[(&str, &str)] = &[
     ("int_to_string", "vortex_int_to_string"),
     ("float_to_string", "vortex_float_to_string"),
+    ("string_to_int", "vortex_string_to_int"),
     ("print", "vortex_print"),
     ("println", "vortex_println"),
 ];
@@ -338,6 +339,13 @@ fn describe_unnameable(e: &ast::Expr) -> Option<String> {
     }
 }
 
+thread_local! {
+    /// What each call returns, so a value with no case of its own still has a
+    /// type. A list built by repeating a call names its element type from this.
+    static CALL_RETURNS: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The C type of a value expression, including a declared struct or enum.
 fn value_c_type(e: &ast::Expr) -> Option<String> {
     match &e.kind {
@@ -351,7 +359,17 @@ fn value_c_type(e: &ast::Expr) -> Option<String> {
         ast::ExprKind::Record { ty, .. }
         | ast::ExprKind::Variant { ty, .. }
         | ast::ExprKind::VariantCall { ty, .. }
-        | ast::ExprKind::VariantRecord { ty, .. } => c_type_named(ty).or_else(|| None),
+        | ast::ExprKind::VariantRecord { ty, .. } => c_type_named(ty),
+        // A call's return type is recorded, so a list built by repeating a call
+        // names its element type. Without this, `[origin(); 2]` had no element
+        // type and both the store into it and the read were refused, which is
+        // right for an unknown type and wrong here.
+        ast::ExprKind::Call { callee, .. } => CALL_RETURNS.with(|r| {
+            r.borrow()
+                .iter()
+                .find(|(n, _)| n == callee)
+                .map(|(_, t)| t.clone())
+        }),
         _ => None,
     }
 }
@@ -415,6 +433,12 @@ fn emit_stmt(
                     indent(out, depth);
                     // The element type comes from the name the base is bound
                     // to, recorded when that declaration was emitted.
+                    if string_base_type(base, lists).is_some() {
+                        return Err(Unsupported::Construct(
+                            "storing into a string".to_string(),
+                            s.pos,
+                        ));
+                    }
                     let elem = match &base.kind {
                         ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).cloned() {
                             Some(t) => t,
@@ -686,6 +710,38 @@ fn emit_expr(
             for a in args {
                 parts.push(emit_expr(a, lists, signatures)?);
             }
+            // A printing builtin takes a type tag and a value rather than a
+            // `const char *`, because the tree interpreter formats whatever it
+            // is given. Passing a `Char`, which is what a string index produces,
+            // as a pointer segfaulted.
+            if matches!(callee.as_str(), "print" | "println") {
+                // `parts` already holds the plain argument expressions, so the
+                // bindings are kept apart from it.
+                let mut tagged: Vec<String> = Vec::with_capacity(args.len());
+                let mut decls: Vec<String> = Vec::with_capacity(args.len());
+                for (i, value) in parts.iter().enumerate() {
+                    let tag = print_tag_of(&args[i], lists, signatures);
+                    // A function call is not an lvalue in C, so its address
+                    // cannot be taken. The value is bound to a local first.
+                    let slot = format!("__vortex_p{}", i);
+                    tagged.push(format!("{tag}, &{slot}"));
+                    decls.push(format!(
+                        "{t} {slot} = {v};",
+                        t = print_slot_type(tag),
+                        slot = slot,
+                        v = value
+                    ));
+                }
+                // The whole thing is a statement expression: the declarations,
+                // then the call as its value. A comma expression cannot hold a
+                // declaration, which is what the first attempt tried.
+                return Ok(format!(
+                    "({{ {decls} {callee}({args}); }})",
+                    decls = decls.join(" "),
+                    callee = param_name(callee),
+                    args = tagged.join(", ")
+                ));
+            }
             format!("{}({})", param_name(callee), parts.join(", "))
         }
         ast::ExprKind::Paren(inner) => format!("({})", emit_expr(inner, lists, signatures)?),
@@ -738,11 +794,14 @@ fn emit_expr(
             // array and does not compile for a string. Refusing it by name is
             // better than emitting C that happens to compile and means
             // something else.
+            // A string is indexed by character, and a Vortex `Char` is a
+            // Unicode scalar, so the read is a scalar at that position rather
+            // than a byte. The string walk already generates the decoding
+            // helper, so the read is a call to the same one.
             if string_base_type(base, lists).is_some() {
-                return Err(Unsupported::Construct(
-                    "indexing a string".to_string(),
-                    e.pos,
-                ));
+                let b = emit_expr(base, lists, signatures)?;
+                let i = emit_expr(index, lists, signatures)?;
+                return Ok(format!("((int32_t)vortex_char_at({b}, {i}))", b = b, i = i));
             }
             // A tuple has no list representation, so indexing one emitted a list
             // access and gcc reported a request for `.items` on a struct. A
@@ -1491,22 +1550,133 @@ fn both_numeric(
     numeric_in(lhs, lists, signatures) && numeric_in(rhs, lists, signatures)
 }
 
+/// Whether a C type is one of the numeric scalars, which is what a `+` on a
+/// value has to be for the operator to be arithmetic rather than concatenation.
+fn is_numeric_c_type(t: &str) -> bool {
+    matches!(t, "int64_t" | "double" | "int" | "int32_t")
+}
+
+/// The C type of the local a printing argument is bound to, which follows from
+/// the tag the helper uses to read it.
+fn print_slot_type(tag: &str) -> &'static str {
+    match tag {
+        "1" => "int32_t",
+        "2" => "int64_t",
+        _ => "const char *",
+    }
+}
+
+/// The type tag the generated `print` uses to choose a format: 0 is text, 1 is
+/// a `Char`, 2 is a `Bool`.
+fn print_tag_of(
+    e: &ast::Expr,
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> &'static str {
+    let _ = signatures;
+    let name = match &e.kind {
+        ast::ExprKind::Str(_) => return "0",
+        ast::ExprKind::Paren(inner) => return print_tag_of(inner, lists, signatures),
+        ast::ExprKind::Ident(n) => lists.get(&param_name(n)).map(|s| s.as_str()).unwrap_or("0"),
+        // A string index produces a `Char`, so it is tagged as one.
+        ast::ExprKind::Index(base, _) => {
+            return match string_base_type(base, lists) {
+                Some(_) => "1",
+                None => "0",
+            }
+        }
+        _ => "0",
+    };
+    match name {
+        "int32_t" => "1",
+        "int" => "2",
+        _ => "0",
+    }
+}
+
+/// Whether a builtin returns a number, for the builtins the emitter provides.
+/// A call to one of these is numeric whether or not the program declared it.
+fn builtin_returns_number(name: &str) -> bool {
+    matches!(name, "string_to_int" | "len" | "int_to_string_len")
+}
+
+/// The declared C type of a struct field, from the program's declarations.
+fn field_type(struct_name: &str, field: &str) -> Option<String> {
+    FIELD_TYPES.with(|d| {
+        d.borrow()
+            .iter()
+            .find(|(s, f, _)| *s == struct_name && *f == field)
+            .map(|(_, _, t)| t.clone())
+    })
+}
+
+thread_local! {
+    /// Every struct's fields with their C types, so a field read knows its own
+    /// type rather than being classified from the base's.
+    static FIELD_TYPES: std::cell::RefCell<Vec<(String, String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 fn numeric_in(e: &ast::Expr, lists: &mut HashMap<String, String>, signatures: &Signatures) -> bool {
     match &e.kind {
         ast::ExprKind::Int(_) | ast::ExprKind::Float(_) | ast::ExprKind::Bool(_) => true,
         ast::ExprKind::Cast(_, t) => t.name() == "Int" || t.name() == "Float",
         ast::ExprKind::Paren(inner) => numeric_in(inner, lists, signatures),
+        // A field read is numeric when the field is declared numeric, which the
+        // struct declaration says. This is the fourth instance of the shape
+        // STAGE14.md describes: a value with no case here falls through to being
+        // treated as unknown, and whether that means a wrong answer or a
+        // refusal depends on where the missing case sat.
+        ast::ExprKind::Field(base, field) => {
+            // The base is a variable holding the struct, so the struct's name is
+            // the base's recorded type, which is `C` plus the declared name.
+            // Reading the base's own name as though it were the type is what
+            // made the first attempt find nothing.
+            // The base is a name holding a struct, a list element whose
+            // element type is a struct, or a call that returned one. Each is
+            // resolved the same way, through the type recorded for it.
+            let recorded = match &base.kind {
+                ast::ExprKind::Ident(n) => lists.get(&param_name(n)).cloned(),
+                ast::ExprKind::Index(list_base, _) => match &list_base.kind {
+                    ast::ExprKind::Ident(n) => lists.get(&param_name(n)).cloned(),
+                    _ => None,
+                },
+                ast::ExprKind::Call { callee, .. } => CALL_RETURNS.with(|r| {
+                    r.borrow()
+                        .iter()
+                        .find(|(n, _)| n == callee)
+                        .map(|(_, t)| t.clone())
+                }),
+                _ => None,
+            };
+            let struct_name = match recorded {
+                Some(t) if t.starts_with('C') => t[1..].to_string(),
+                _ => String::new(),
+            };
+            match field_type(&struct_name, field) {
+                Some(t) => is_numeric_c_type(&t),
+                // A field of a struct the emitter does not have a declaration
+                // for is not classified, which is honest rather than a guess.
+                None => false,
+            }
+        }
         // A recorded name is numeric when it was recorded as a number.
         ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).map(|s| s.as_str()) {
             Some("int64_t") | Some("double") | Some("int") | Some("int32_t") => true,
             Some("const char *") => false,
             _ => false,
         },
-        // A call is numeric when the callee declares a numeric return type.
-        ast::ExprKind::Call { callee, .. } => matches!(
-            signatures.get(callee).map(|s| s.as_str()),
-            Some("int64_t") | Some("double") | Some("int") | Some("int32_t")
-        ),
+        // A call is numeric when the callee returns a number, which for a
+        // builtin is the type its helper returns. `string_to_int` was missing
+        // from this, so a `+` on it was unclassified, which is the fifth
+        // instance of the shape STAGE14.md describes.
+        ast::ExprKind::Call { callee, .. } => {
+            let declared = signatures.get(callee).map(|s| s.as_str());
+            match declared {
+                Some(t) => is_numeric_c_type(t),
+                None => builtin_returns_number(callee),
+            }
+        }
         // A comparison is a Bool, which is numeric, and an arithmetic or
         // boolean subexpression is numeric when its operands are.
         ast::ExprKind::Binary { op, lhs, rhs } => {
@@ -1657,8 +1827,24 @@ pub fn emit_program(
                 ast::Item::Function(_) => {}
             }
         }
+        // Every struct field is recorded at its declared type, so a read of one
+        // knows what it holds. A field read had no case, which is the fourth
+        // instance of the shape STAGE14.md describes.
+        let mut fields = Vec::new();
+        for item in items {
+            if let ast::Item::Struct(sd) = item {
+                for f in &sd.node.fields {
+                    fields.push((
+                        sd.node.name.clone(),
+                        f.name.clone(),
+                        c_type(&f.ty).unwrap_or_else(|| "void *".to_string()),
+                    ));
+                }
+            }
+        }
         DECLARED.with(|d| *d.borrow_mut() = names);
         ENUM_VARIANTS.with(|v| *v.borrow_mut() = variants);
+        FIELD_TYPES.with(|f| *f.borrow_mut() = fields);
     }
     let mut out = String::new();
     let _ = writeln!(
@@ -1698,14 +1884,73 @@ pub fn emit_program(
     let _ = writeln!(out, "    strcpy(r, buf);");
     let _ = writeln!(out, "    return r;");
     let _ = writeln!(out, "}}");
+    // Encodes one Unicode scalar as UTF-8, so a `Char` above U+FFFF prints as
+    // the character rather than as a truncated one. `fputc` takes an int, and a
+    // scalar such as U+1F600 does not fit the byte it writes, which printed a
+    // space for the emoji.
     let _ = writeln!(
         out,
-        "static void vortex_print(const char *s) {{ fputs(s, stdout); }}"
+        "static int vortex_utf8_encode(int32_t cp, char *out) {{"
     );
-    let _ = writeln!(out, "static void vortex_println(const char *s) {{");
-    let _ = writeln!(out, "    fputs(s, stdout);");
-    let _ = writeln!(out, "    fputc('\\n', stdout);");
+    let _ = writeln!(out, "    unsigned int c = (unsigned int)cp;");
+    let _ = writeln!(out, "    if (c < 0x80) {{ out[0] = (char)c; return 1; }}");
+    let _ = writeln!(out, "    if (c < 0x800) {{");
+    let _ = writeln!(out, "        out[0] = (char)(0xC0 | (c >> 6));");
+    let _ = writeln!(out, "        out[1] = (char)(0x80 | (c & 0x3F)); return 2;");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "    if (c < 0x10000) {{");
+    let _ = writeln!(out, "        out[0] = (char)(0xE0 | (c >> 12));");
+    let _ = writeln!(out, "        out[1] = (char)(0x80 | ((c >> 6) & 0x3F));");
+    let _ = writeln!(out, "        out[2] = (char)(0x80 | (c & 0x3F)); return 3;");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "    out[0] = (char)(0xF0 | (c >> 18));");
+    let _ = writeln!(out, "    out[1] = (char)(0x80 | ((c >> 12) & 0x3F));");
+    let _ = writeln!(out, "    out[2] = (char)(0x80 | ((c >> 6) & 0x3F));");
+    let _ = writeln!(out, "    out[3] = (char)(0x80 | (c & 0x3F)); return 4;");
     let _ = writeln!(out, "}}");
+    let _ = writeln!(out, "");
+
+    // `string_to_int` parses leading whitespace and a sign, and returns 0 for
+    // anything it cannot read, which is what the tree interpreter does. It was
+    // absent from the emitter entirely, so a call to it was unclassified.
+    let _ = writeln!(out, "static int64_t vortex_string_to_int(const char *s) {{");
+    let _ = writeln!(out, "    while (*s == ' ' || *s == '\\t') s++;");
+    let _ = writeln!(out, "    int neg = 0;");
+    let _ = writeln!(
+        out,
+        "    if (*s == '-') {{ neg = 1; s++; }} else if (*s == '+') s++;"
+    );
+    let _ = writeln!(out, "    int64_t v = 0;");
+    let _ = writeln!(out, "    int any = 0;");
+    let _ = writeln!(
+        out,
+        "    while (*s >= '0' && *s <= '9') {{ v = v * 10 + (*s - '0'); s++; any = 1; }}"
+    );
+    let _ = writeln!(out, "    if (!any) return 0;");
+    let _ = writeln!(out, "    return neg ? -v : v;");
+    let _ = writeln!(out, "}}");
+    // `print` and `println` take a type tag and a value, because the tree
+    // interpreter formats whatever it is given. The C helpers took a
+    // `const char *`, so printing a `Char`, which is what a string index
+    // produces, passed an int32_t as a pointer and the program segfaulted.
+    for name in ["vortex_print", "vortex_println"] {
+        let _ = writeln!(out, "static void {name}(int tag, void *v) {{");
+        let _ = writeln!(out, "    if (tag == 1) {{");
+        let _ = writeln!(out, "        int32_t cp = *(int32_t *)v;");
+        let _ = writeln!(out, "        char utf8[4];");
+        let _ = writeln!(out, "        int n = vortex_utf8_encode(cp, utf8);");
+        let _ = writeln!(out, "        fwrite(utf8, 1, (size_t)n, stdout);");
+        let _ = writeln!(out, "    }}");
+        let _ = writeln!(
+            out,
+            "    else if (tag == 2) fputs(*(int64_t *)v ? \"1\" : \"0\", stdout);"
+        );
+        let _ = writeln!(out, "    else fputs(*(const char **)v, stdout);");
+        if name == "vortex_println" {
+            let _ = writeln!(out, "    fputc('\\n', stdout);");
+        }
+        let _ = writeln!(out, "}}");
+    }
     let _ = writeln!(out, "");
     let _ = writeln!(
         out,
@@ -1942,6 +2187,29 @@ pub fn emit_program(
     // The declared return type of every function, so a `let` holding a call
     // can be declared at what the callee actually returns.
     let mut signatures: Signatures = HashMap::new();
+    // Every call's return type, so a value with no case of its own still has a
+    // type: `[origin(); 2]` names its element type from what `origin` returns.
+    let mut call_returns: HashMap<String, String> = HashMap::new();
+    for f in functions {
+        call_returns.insert(
+            f.node.name.clone(),
+            f.node
+                .ret
+                .as_ref()
+                .and_then(c_type)
+                .unwrap_or_else(|| "void".to_string()),
+        );
+    }
+    // The builtins, which are not in the program's declarations.
+    for (name, ret) in [
+        ("string_to_int", "int64_t"),
+        ("int_to_string", "const char *"),
+        ("float_to_string", "const char *"),
+    ] {
+        call_returns.insert(name.to_string(), ret.to_string());
+    }
+    CALL_RETURNS
+        .with(|r| *r.borrow_mut() = call_returns.into_iter().collect::<Vec<(String, String)>>());
     for f in functions {
         signatures.insert(
             f.node.name.clone(),
@@ -2135,6 +2403,50 @@ fn collect_calls_stmt(s: &ast::Stmt, out: &mut Vec<String>) {
 
 fn collect_calls_expr(e: &ast::Expr, out: &mut Vec<String>) {
     match &e.kind {
+        // A list literal, a repeat and a variant expression all hold values that
+        // may call a function. None of them was walked, so `[origin(); 2]` named
+        // a callee that was never emitted and the generated C did not compile.
+        ast::ExprKind::Array(items) => {
+            for i in items {
+                collect_calls_expr(i, out);
+            }
+        }
+        ast::ExprKind::Repeat { value, count } => {
+            collect_calls_expr(value, out);
+            collect_calls_expr(count, out);
+        }
+        ast::ExprKind::Record { fields, .. } => {
+            for (_, v) in fields {
+                collect_calls_expr(v, out);
+            }
+        }
+        ast::ExprKind::VariantCall { args, .. } => {
+            for a in args {
+                collect_calls_expr(a, out);
+            }
+        }
+        ast::ExprKind::VariantRecord { fields, .. } => {
+            for (_, v) in fields {
+                collect_calls_expr(v, out);
+            }
+        }
+        ast::ExprKind::Tuple(items) => {
+            for i in items {
+                collect_calls_expr(i, out);
+            }
+        }
+        ast::ExprKind::Match { scrutinee, arms } => {
+            collect_calls_expr(scrutinee, out);
+            for a in arms {
+                collect_calls_expr(&a.body, out);
+            }
+        }
+        ast::ExprKind::Field(base, _) => collect_calls_expr(base, out),
+        ast::ExprKind::Cast(inner, _) => collect_calls_expr(inner, out),
+        ast::ExprKind::Index(base, idx) => {
+            collect_calls_expr(base, out);
+            collect_calls_expr(idx, out);
+        }
         ast::ExprKind::Call { callee, args } => {
             out.push(callee.clone());
             for a in args {

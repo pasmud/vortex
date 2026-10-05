@@ -217,10 +217,11 @@ fn an_if_expression_is_emitted_as_a_ternary() {
 #[test]
 fn the_emitter_still_refuses_rather_than_emitting_broken_c() {
     // A construct the emitter does not handle must produce a named reason, not
-    // C that fails to compile with no explanation. Indexing a string is the one
-    // left, and stage 11 added it because it was being emitted as a list
-    // access, which is a different thing and did not compile.
-    let src = "fn first(w: Str) -> Str { return w[0]; }
+    // C that fails to compile with no explanation. Indexing a string was the
+    // one that was refused from stage 11; stage 14 carries it, so the remaining
+    // refusal here is a store into a string, which the tree interpreter does not
+    // define either.
+    let src = "fn poke(w: Str) { w[0] = 65; }
                fn main() -> Int { return 0; }";
     let ast = vortexc::parse(src).expect("should parse");
     let functions: Vec<_> = ast
@@ -233,19 +234,46 @@ fn the_emitter_still_refuses_rather_than_emitting_broken_c() {
         .collect();
     let f = functions
         .iter()
-        .find(|f| f.node.name == "first")
+        .find(|f| f.node.name == "poke")
         .expect("the function should be there");
     match vortexc::cgen::emit_function_alone(f) {
-        Ok(_) => panic!("indexing a string should not be emitted"),
+        Ok(_) => panic!("storing into a string should not be emitted"),
         Err(e) => {
             let text = e.to_string();
             assert!(
-                text.contains("indexing a string"),
+                text.contains("storing into a string"),
                 "the refusal should name the construct, said {:?}",
                 text
             );
         }
     }
+}
+
+/// A string index reads a `Char`, by character rather than by byte.
+///
+/// It was refused from stage 11, and stage 14 carries it because the tree
+/// interpreter already defines it and `examples/strings.vx` depends on it. The
+/// result is a `Char` and not an `Int`, so `print` has to be told which it is.
+#[test]
+fn a_string_index_reads_a_char() {
+    let src = "fn main() { let w = \"Vortex\"; print(w[0]); }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c =
+        vortexc::cgen::emit_program(&ast.items, "main", &[]).expect("a string index should emit");
+    assert!(
+        c.contains("vortex_char_at"),
+        "a string index should decode a scalar, said {:?}",
+        c.lines()
+            .filter(|l| l.contains("char_at"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        c.contains("vortex_print(1,"),
+        "a Char should be printed as a character, said {:?}",
+        c.lines()
+            .filter(|l| l.contains("vortex_print("))
+            .collect::<Vec<_>>()
+    );
 }
 
 /// A `match` is emitted, and the arms are tried in order, which is what the
@@ -602,5 +630,67 @@ fn a_tuple_bound_by_a_let_is_refused_in_a_for_in() {
         text.contains("at 1:"),
         "the refusal should carry a 1-based position, said {:?}",
         text
+    );
+}
+
+/// `+` on two struct fields is arithmetic, for an `Int` and for a `Float`.
+///
+/// The field read had no case in the classification, so it was unclassified and
+/// the `+` was refused. An `Int` field is `int64_t`, which is the emitter's
+/// default, so a test with only an `Int` field would look right whether or not
+/// anything was fixed. The `Float` field is the one that shows the declared type
+/// is actually read, and both are here for that reason.
+#[test]
+fn arithmetic_on_struct_fields_is_carried() {
+    let src = "struct Point { x: Int, y: Float }
+               fn main() -> Int {
+                   let a = Point { x: 2, y: 1.5 };
+                   let b = Point { x: 3, y: 2.5 };
+                   println(int_to_string(a.x + b.x));
+                   println(float_to_string(a.y + b.y));
+                   return 0;
+               }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c =
+        vortexc::cgen::emit_program(&ast.items, "main", &[]).expect("field arithmetic should emit");
+    // Both fields read at their declared type, not at the emitter's default.
+    assert!(
+        c.contains("(a).x + (b).x"),
+        "an Int field should read at int64_t, said {:?}",
+        c.lines()
+            .filter(|l| l.contains("int_to_string"))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        c.contains("(a).y + (b).y"),
+        "a Float field should read at double, said {:?}",
+        c.lines()
+            .filter(|l| l.contains("float_to_string"))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A call inside a list literal, a repeat or a variant is reachable.
+///
+/// The walk that decides which functions to emit did not descend into those, so
+/// `[origin(); 2]` named a callee that was never emitted and the generated C had
+/// a call to a function that did not exist.
+#[test]
+fn a_call_inside_a_collection_value_is_emitted() {
+    let src = "struct Point { x: Int }
+               fn origin() -> Point { return Point { x: 0 }; }
+               fn main() -> Int {
+                   var points = [origin(); 2];
+                   return points[0].x;
+               }";
+    let ast = vortexc::parse(src).expect("should parse");
+    let c = vortexc::cgen::emit_program(&ast.items, "main", &[])
+        .expect("a repeat of a call should emit");
+    assert!(
+        c.contains("CPoint origin(void)"),
+        "the callee of a repeat should be emitted, said {:?}",
+        c.lines()
+            .filter(|l| l.contains("origin"))
+            .collect::<Vec<_>>()
     );
 }
