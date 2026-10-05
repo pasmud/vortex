@@ -117,6 +117,95 @@ fn compiled(src: &str) -> Result<String, String> {
     })
 }
 
+/// What the tree interpreter printed to standard output.
+fn tree_stdout(src: &str) -> String {
+    let mut out: Vec<u8> = Vec::new();
+    let _ = vortexc::run_source(src, &mut out);
+    String::from_utf8_lossy(&out).trim().to_string()
+}
+
+/// What the bytecode VM printed to standard output.
+fn vm_stdout(src: &str) -> String {
+    let mut out: Vec<u8> = Vec::new();
+    let _ = vortexc::run_on_vm(src, &mut out);
+    String::from_utf8_lossy(&out).trim().to_string()
+}
+
+/// What the tree interpreter reported on standard error, which is where a
+/// diagnostic goes.
+fn tree_error(src: &str) -> String {
+    value(vortexc::run_source(src, &mut std::io::sink()))
+}
+
+/// Compiles and runs a program, returning what it printed to standard output.
+///
+/// The earlier helper returns the entry's return value, which is right for the
+/// loops it was written for and wrong for a program that prints. A test that
+/// only matched strings in the generated C could not run the program at all, and
+/// so could not tell a working index from a byte offset that happened to agree
+/// on ASCII. These tests run it.
+fn compiled_stdout(src: &str, entry: &str) -> Result<String, String> {
+    let ast = match vortexc::parse(src) {
+        Ok(a) => a,
+        Err(e) => return Err(format!("parse: {}", e)),
+    };
+    let c = match vortexc::cgen::emit_program(&ast.items, entry, &[]) {
+        Ok(c) => c,
+        Err(e) => return Err(format!("not emitted: {}", e)),
+    };
+    static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("vortex-cgen-out-{}-{}", std::process::id(), n));
+    let _ = std::fs::create_dir_all(&dir);
+    let cfile = dir.join("program.c");
+    let bin = dir.join("program");
+    std::fs::write(&cfile, &c).map_err(|e| e.to_string())?;
+
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    let mut seen: Option<String> = None;
+    for opt in ["-O2", "-O0"] {
+        let build = Command::new(&cc)
+            .arg(opt)
+            .args(["-o"])
+            .arg(&bin)
+            .arg(&cfile)
+            .output()
+            .map_err(|e| format!("could not run the C compiler: {}", e))?;
+        if !build.status.success() {
+            return Err(format!(
+                "the C compiler at {} rejected the generated source:\n{}",
+                opt,
+                String::from_utf8_lossy(&build.stderr)
+            ));
+        }
+        let out = Command::new(&bin)
+            .output()
+            .map_err(|e| format!("could not run the compiled program: {}", e))?;
+        if !out.status.success() {
+            return Err(format!(
+                "the compiled program at {} failed: {}",
+                opt,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        // Both levels are checked and have to agree with each other, because
+        // `-O2` can quietly repair an emitter mistake and `-O0` cannot. A
+        // difference between them is reported rather than passed over.
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if let Some(first) = &seen {
+            if *first != stdout {
+                return Err(format!(
+                    "the compiled program printed {:?} at -O2 and {:?} at -O0",
+                    first, stdout
+                ));
+            }
+        } else {
+            seen = Some(stdout);
+        }
+    }
+    Ok(seen.unwrap_or_default())
+}
+
 /// The literal argument the Vortex `main` passes to the named function.
 fn argument(functions: &[Spanned<FnDecl>], func: &str) -> String {
     for f in functions {
@@ -249,31 +338,67 @@ fn the_emitter_still_refuses_rather_than_emitting_broken_c() {
     }
 }
 
-/// A string index reads a `Char`, by character rather than by byte.
+/// A string index counts characters, not bytes, and the test runs the C.
 ///
-/// It was refused from stage 11, and stage 14 carries it because the tree
-/// interpreter already defines it and `examples/strings.vx` depends on it. The
-/// result is a `Char` and not an `Int`, so `print` has to be told which it is.
+/// The first version of this test used the ASCII string "Vortex" and only
+/// matched a string in the generated C. For ASCII a byte offset and a character
+/// index are the same number, so the test could not tell a correct index from
+/// one that read the wrong byte, and it never ran the program. That is the stage
+/// 7 sieve lesson again: an integer-only workload could not reveal a `Float`
+/// defect, and an ASCII-only test could not reveal a byte-offset defect.
+///
+/// This one uses "héllo", whose second character is two bytes, compiles and runs
+/// the C at `-O2` and at `-O0`, and asserts the known answer on all three paths.
 #[test]
-fn a_string_index_reads_a_char() {
-    let src = "fn main() { let w = \"Vortex\"; print(w[0]); }";
-    let ast = vortexc::parse(src).expect("should parse");
-    let c =
-        vortexc::cgen::emit_program(&ast.items, "main", &[]).expect("a string index should emit");
+fn a_string_index_counts_characters_not_bytes() {
+    let src = "fn main() {
+        let w = \"héllo\";
+        print(w[2]);
+        print(w[0]);
+        println(\"\");
+    }";
+    assert_eq!(tree_stdout(src), "lh", "the tree interpreter's own answer");
+    assert_eq!(vm_stdout(src), "lh", "the VM's own answer");
+    match compiled_stdout(src, "main") {
+        Ok(out) => assert_eq!(out, "lh", "the compiled path at -O2 and -O0"),
+        Err(e) => panic!("the string index should compile and run: {}", e),
+    }
+}
+
+/// A string index past the end is rejected rather than reading past the NUL.
+///
+/// Reading past the terminator is undefined behaviour in C. The tree interpreter
+/// and the VM report a bad index naming the index and the character count, and
+/// the compiled path has to fail rather than return a placeholder.
+#[test]
+fn a_string_index_past_the_end_is_rejected() {
+    let src = "fn main() {
+        let w = \"héllo\";
+        print(w[9]);
+        println(\"\");
+    }";
+    let tree_out = tree_error(src);
     assert!(
-        c.contains("vortex_char_at"),
-        "a string index should decode a scalar, said {:?}",
-        c.lines()
-            .filter(|l| l.contains("char_at"))
-            .collect::<Vec<_>>()
+        tree_out.contains("past the end of 5 characters"),
+        "the tree interpreter should report the bad index, said {:?}",
+        tree_out
     );
+    // Five characters, not six bytes: the count is characters, because the
+    // diagnostic says characters.
+    let vm_out = value(vortexc::run_on_vm(src, &mut std::io::sink()));
     assert!(
-        c.contains("vortex_print(1,"),
-        "a Char should be printed as a character, said {:?}",
-        c.lines()
-            .filter(|l| l.contains("vortex_print("))
-            .collect::<Vec<_>>()
+        vm_out.contains("past the end of 5 characters"),
+        "the VM should report the same, said {:?}",
+        vm_out
     );
+    match compiled_stdout(src, "main") {
+        Ok(out) => panic!("a bad index should not print {:?}, it should fail", out),
+        Err(e) => assert!(
+            e.contains("past the end of 5 characters"),
+            "the compiled path should name the index and the character count, said {:?}",
+            e
+        ),
+    }
 }
 
 /// A `match` is emitted, and the arms are tried in order, which is what the
@@ -693,4 +818,28 @@ fn a_call_inside_a_collection_value_is_emitted() {
             .filter(|l| l.contains("origin"))
             .collect::<Vec<_>>()
     );
+}
+
+/// Printing a `Bool` prints the word, on every path.
+///
+/// A `Bool` had no arm in the type decision, so a binding holding one was
+/// declared `int64_t`, `print` tagged it as text and printed the pointer's own
+/// bytes. The example set had no `print` of a `Bool`, which is the same gap as
+/// the string index: the defect was in a shape nothing reached. An external
+/// review raised it as possibly no longer applying, and it did.
+#[test]
+fn printing_a_bool_prints_the_word() {
+    let src = "fn main() {
+        var a = true;
+        var b = false;
+        print(a);
+        print(b);
+        println(\"\");
+    }";
+    assert_eq!(tree_stdout(src), "truefalse", "the tree interpreter");
+    assert_eq!(vm_stdout(src), "truefalse", "the VM");
+    match compiled_stdout(src, "main") {
+        Ok(out) => assert_eq!(out, "truefalse", "the compiled path at -O2 and -O0"),
+        Err(e) => panic!("printing a Bool should compile and run: {}", e),
+    }
 }

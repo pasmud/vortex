@@ -46,6 +46,7 @@ mistake in a different place: a check that only a one-letter name satisfied.
 | 5 | a function returning a declared struct | fallback `return 0;`, a gcc type error | stage 10, building the examples at `-O0` |
 | 6 | `string_to_int` | no case at all, so a `+` on it was refused | stage 14, `strings.vx` |
 | 7 | a call inside a collection value | the callee was never emitted | stage 14, `fieldarith.vx` |
+| 8 | `Bool` | no arm, so a binding was `int64_t` and `print` printed a pointer's bytes | stage 14, an external review |
 
 Instances 1, 2 and 5 were **silently wrong answers**. Instances 3, 4 and 6 were
 refusals. Instance 7 was a gcc error. Three outcomes from one shape, and which
@@ -57,6 +58,40 @@ by writing a program.** Asking "what else is read as a `CList`" found the tuple
 cases in stage 13. Asking "what has no arm in the type decision" found
 instances 4, 6 and 7 here. The second method finds more per turn, because it
 asks about the class rather than about a symptom.
+
+## A second review, and the test that could not fail
+
+An external review of this stage found a real correctness defect that this stage's
+own test could not see, and the reason is the method problem stated above.
+
+**A string index was passed to `vortex_char_at` as a byte offset, while a Vortex
+index counts characters.** For `"héllo"[2]` the generated C read byte 2, which is
+the second byte of the two byte `é`, and returned the replacement character
+`U+FFFD` instead of `l`. There was also no bounds check, so an index past the end
+read past the NUL terminator, which is undefined behaviour in C, while the
+interpreters reported a bad index.
+
+**Why the test did not catch it: the test used the ASCII string `"Vortex"`.** For
+ASCII a byte offset and a character index are the same number, so the two
+implementations were indistinguishable. The test also only matched a string in
+the generated C and never compiled or ran it, so it could not have caught a
+wrong answer at all. This is the stage 7 sieve lesson again in a new form: an
+integer-only workload could not reveal a `Float` defect, and an ASCII-only test
+could not reveal a byte-offset defect. **A test whose input makes the bug
+impossible to express is not a test.**
+
+Both are fixed. The index walks that many characters to find its byte offset,
+stops at the terminator, and a bad index fails with a diagnostic naming the index
+and the **character** count rather than the byte count, which is what the
+interpreters say. The test now uses a non-ASCII string, compiles and runs the C
+at `-O2` and at `-O0`, and asserts the known answer on all three paths. It was
+verified to fail against the old code and pass against the new.
+
+The general rule, which is the same one the shape gives: **a test has to use a
+value whose natural type, width or encoding is not the one the implementation
+defaults to.** An `Int` field is `int64_t`. An ASCII string is one byte per
+character. A `Point` is not `Vec2`. Each of those defaults made a defect
+invisible, and each of them is the same mistake in a different place.
 
 ## What this stage carried
 
@@ -140,8 +175,25 @@ examples on all four paths.
 
 Extending the guard to a document with no measured claims would be guarding
 nothing. What is checked instead is the thing this stage changed, and
-`scripts/check-examples.sh` is where it is checked: it runs every example
-through the compiled path at `-O2` and at `-O0` and the tree interpreter and the
-VM, and fails on any disagreement. `fieldarith.vx` and `strings.vx` are both
-covered by it, so a regression that made a `Float` field truncate or a string
-index fail to compile would fail CI rather than reach a user.
+`scripts/check-examples.sh` is where it is checked.
+
+**What that script guarantees, exactly.** It runs every example through the
+compiled path at `-O2` and at `-O0` and the tree interpreter and the VM, and:
+
+- fails if the compiled output differs from either engine at either level;
+- **fails if any example is refused by the compiled path**, rather than listing
+  it and passing;
+- fails if the compiled path carries no example at all.
+
+The second point was weaker before this stage: a refusal was reported and
+accepted, and only `hello.vx` was required to compile. This document claimed a
+guarantee the script did not give, which is the documentation drifting from the
+artifact for the third time in this project, so the **script was strengthened
+rather than the claim weakened**. It was shown to bite: with an example that
+walks a tuple, which the emitter refuses by name, the script exits 1, and exits
+0 once the example is removed.
+
+What the script does not do is check an answer. It checks that the three paths
+agree, which is this repository's standing rule, and the known-answer checks
+live in `crates/vortexc/tests/compiled.rs`, which compiles and runs the generated
+C and compares it with both engines.

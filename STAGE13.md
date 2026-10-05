@@ -194,8 +194,10 @@ that no unguarded `CList` binding remains false, and it is now true.
 itself.** A `+` on a field read of a declared struct is unclassified and refused,
 because a field read was not recorded as a numeric type. That is a fourth
 instance of the same shape: a value the emitter treated as unknown because it had
-no case for it. It is not fixed here, because it is a refusal rather than a
-wrong answer, and it is listed in the inventory below.
+no case for it. **Stage 14 carried it**, resolving the field through its base's
+recorded type, so the row in the inventory above is closed rather than open. The
+sentence is kept as written at the time because the shape it names is what stage
+14 turned into a document.
 
 **On the review text itself.** Each comment embedded instructions addressed to
 an agent, telling it to commit the suggested diff and run a vendor command

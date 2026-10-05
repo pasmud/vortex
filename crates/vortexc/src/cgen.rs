@@ -351,6 +351,7 @@ fn value_c_type(e: &ast::Expr) -> Option<String> {
     match &e.kind {
         ast::ExprKind::Int(_) => Some("int64_t".to_string()),
         ast::ExprKind::Float(_) => Some("double".to_string()),
+        ast::ExprKind::Bool(_) => Some("int".to_string()),
         ast::ExprKind::Str(_) => Some("const char *".to_string()),
         ast::ExprKind::Cast(_, t) => c_type(t),
         // A record or a variant is a declared struct or enum in the generated
@@ -592,9 +593,11 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
     match &e.kind {
         // A list is a struct with a pointer and a length, not a scalar.
         ast::ExprKind::Array(_) | ast::ExprKind::Repeat { .. } => "CList".to_string(),
+        ast::ExprKind::Bool(_) => "int".to_string(),
+
         ast::ExprKind::Int(_) => "int64_t".to_string(),
         ast::ExprKind::Float(_) => "double".to_string(),
-        ast::ExprKind::Bool(_) => "int".to_string(),
+
         ast::ExprKind::Char(_) => "int32_t".to_string(),
         ast::ExprKind::Str(_) => "const char *".to_string(),
         ast::ExprKind::Binary { op, lhs, rhs } => match op {
@@ -801,7 +804,20 @@ fn emit_expr(
             if string_base_type(base, lists).is_some() {
                 let b = emit_expr(base, lists, signatures)?;
                 let i = emit_expr(index, lists, signatures)?;
-                return Ok(format!("((int32_t)vortex_char_at({b}, {i}))", b = b, i = i));
+                // A bad index fails rather than returning a placeholder. The
+                // interpreters report it, and reading past the terminator is
+                // undefined behaviour in C, so the generated C checks and exits
+                // with a message naming the index and the string.
+                return Ok(format!(
+                    "({{ int32_t __vortex_c = vortex_char_at_index({b}, {i}); \
+                     if (__vortex_c < 0) {{ \
+                         fprintf(stderr, \"bad index: index %lld is past the end of %lld characters\\n\", \
+                                 (long long)({i}), vortex_char_count({b})); \
+                         exit(1); }} \
+                     __vortex_c; }})",
+                    b = b,
+                    i = i
+                ));
             }
             // A tuple has no list representation, so indexing one emitted a list
             // access and gcc reported a request for `.items` on a struct. A
@@ -1943,7 +1959,7 @@ pub fn emit_program(
         let _ = writeln!(out, "    }}");
         let _ = writeln!(
             out,
-            "    else if (tag == 2) fputs(*(int64_t *)v ? \"1\" : \"0\", stdout);"
+            "    else if (tag == 2) fputs(*(int64_t *)v ? \"true\" : \"false\", stdout);"
         );
         let _ = writeln!(out, "    else fputs(*(const char **)v, stdout);");
         if name == "vortex_println" {
@@ -2071,6 +2087,42 @@ pub fn emit_program(
     let _ = writeln!(out, "    if ((c0 & 0xF0) == 0xE0) return 3;");
     let _ = writeln!(out, "    if ((c0 & 0xF8) == 0xF0) return 4;");
     let _ = writeln!(out, "    return 1;");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out, "");
+    // Reads the character at a character index, which is what a Vortex index
+    // means. `vortex_char_at` takes a byte offset, so using it directly made
+    // "héllo"[2] read the second byte of the two byte `é` and return the
+    // replacement character instead of `l`. A byte offset and a character index
+    // are the same thing only for ASCII, which is why the first test, on
+    // "Vortex", could not tell them apart.
+    //
+    // An index past the end returns -1 rather than reading past the terminator,
+    // which is what the tree interpreter reports as a bad index. The generated C
+    // The number of characters in a string, which is not its byte length: a
+    // two byte character is one character. The diagnostic says "characters",
+    // so it has to count them rather than measure the string.
+    let _ = writeln!(out, "static int64_t vortex_char_count(const char *s) {{");
+    let _ = writeln!(out, "    int64_t n = 0;");
+    let _ = writeln!(out, "    for (int64_t off = 0; s[off] != 0; ) {{");
+    let _ = writeln!(out, "        off += vortex_char_len(s, off);");
+    let _ = writeln!(out, "        n++;");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "    return n;");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out, "");
+
+    // has no exception mechanism, so the caller checks.
+    let _ = writeln!(
+        out,
+        "static int32_t vortex_char_at_index(const char *s, int64_t idx) {{"
+    );
+    let _ = writeln!(out, "    int64_t off = 0;");
+    let _ = writeln!(out, "    for (int64_t k = 0; k < idx; k++) {{");
+    let _ = writeln!(out, "        if (s[off] == 0) return -1;");
+    let _ = writeln!(out, "        off += vortex_char_len(s, off);");
+    let _ = writeln!(out, "    }}");
+    let _ = writeln!(out, "    if (s[off] == 0) return -1;");
+    let _ = writeln!(out, "    return vortex_char_at(s, off);");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out, "");
 
