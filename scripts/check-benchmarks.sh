@@ -151,3 +151,37 @@ echo "The machine specification is present, every row is present, the matrix"
 echo "half of the checksum is recorded, and every wall clock number the"
 echo "document quotes is the number the committed transcript records."
 echo "The check is satisfied."
+# --- DECISION.md ------------------------------------------------------------
+#
+# Stage 5 quotes before and after numbers for the two VM changes it tried, and
+# a reader has as much right to diff those against a committed transcript as
+# they have for the BENCHMARKS.md table. The before figures are the baseline in
+# bench/results/stage5-baseline.txt, so every "was" figure has to appear there.
+#
+# A figure in DECISION.md that is not in a transcript is a measurement that
+# cannot be checked, so this fails rather than passing on trust.
+DEC="$ROOT/DECISION.md"
+[ -f "$DEC" ] || fail "DECISION.md is missing"
+
+BASELINE="$ROOT/bench/results/stage5-baseline.txt"
+[ -f "$BASELINE" ] || fail "bench/results/stage5-baseline.txt is missing"
+BASEFLAT=$(tr '\n' ' ' < "$BASELINE" | tr -s ' ')
+
+DECFLAT=$(tr '\n' ' ' < "$DEC" | tr -s ' ')
+
+# The baseline figures DECISION.md quotes, which are the fastest runs in the
+# committed stage5 baseline transcript.
+for ms in 4935 3223; do
+    case "$DECFLAT" in
+        *"was"*"$ms ms"*) ;;
+        *) fail "DECISION.md quotes $ms ms as a before figure but does not word it as one" ;;
+    esac
+    case "$BASEFLAT" in
+        *"$ms"*) ;;
+        *) fail "DECISION.md quotes $ms ms as a before figure and \
+bench/results/stage5-baseline.txt does not record it" ;;
+    esac
+done
+
+echo "DECISION.md's before figures appear in bench/results/stage5-baseline.txt."
+echo "The check is satisfied."

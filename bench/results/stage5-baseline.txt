@@ -1,0 +1,18 @@
+Vortex engine measurement
+=========================
+
+Repeats per engine: 5 (every run is shown, not just the fastest)
+Workload:           bench/vortex/sieve.vx
+Machine:            Linux 6.18.35 x86_64 on Intel(R) Core(TM) i5-8500T CPU @ 2.10GHz
+
+ENGINE   RUN TIMES IN ms, THEN CHECKSUM
+-------  ------------------------------------------------
+tree     3227 3240 3223 3247 3233 | checksum 1179908154
+vm       4982 4981 4935 4940 4949 | checksum 1179908154
+
+The checksum is printed by each engine and must be the same as the C and
+Rust baselines. A run that printed no checksum shows as 'failed'.
+
+A single fastest figure hides jitter. Stage 4 saw the tree interpreter
+move by 55 ms and the VM by 76 ms between runs on this host, so a change
+smaller than that spread is not evidence of anything.

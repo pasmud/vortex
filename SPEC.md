@@ -237,8 +237,8 @@ No aliasing means no shared subtrees, no parent pointers and no cycles. A
 directed graph with cycles is not directly expressible. This is the main
 weakness of the model and it is not solved yet.
 
-Stage 5 decides between two options, and it must decide with measurements rather
-than taste:
+Stage 5 decided between these two options with measurements rather than taste,
+and kept Option A. The reasoning and the falsifier are in `DECISION.md`:
 
 - **Option A: keep linearity.** Graphs use arena indices or an explicit parent
   field. The model stays simple and allocation stays cheap.
@@ -247,7 +247,16 @@ than taste:
   narrow collector rather than a general one, but it reintroduces pauses.
 
 The decision rule is fixed in advance: adopt Option B only if a committed
-benchmark shows Option A is the limiting factor on realistic workloads.
+benchmark shows Option A is the limiting factor on realistic workloads. No such
+benchmark exists, so Option A stands and no collector is adopted.
+
+What the model does and does not give is stated plainly rather than implied.
+Every value has one binding and one owner, and a store into a list changes the
+list in place, which `examples/ownership.vx` demonstrates. **Enforcement is not
+yet implemented**: a use after a move still compiles, and
+`crates/vortexc/tests/ownership.rs` pins that gap with the diagnostic each case
+would produce. Enforcement is the natural next piece of work and it is not
+claimed to exist.
 
 ### 7.3 Unsafe code
 
@@ -329,7 +338,9 @@ building the benchmark workload.
 - **No generics and no traits.** Section 6.3 describes monomorphisation, and
   the parser has no generic syntax, so nothing about it is implemented.
 - **Move semantics are not yet checked.** Section 7 states a move model, but a
-  use after a move still compiles. That is stage 5 work.
+  use after a move still compiles. Stage 5 decided to keep the model and
+  `DECISION.md` records that enforcement is the next piece of work. The
+  behaviour that does exist is demonstrated by `examples/ownership.vx`.
 
 Modules come later. `import` is reserved in v0.1 so that adding it does not
 break programs.
@@ -372,46 +383,50 @@ to. Stage 4's first job is that number.
 5. **Backend.** A native backend and a memory and concurrency model, chosen
    from stage 4 measurements and from section 7.2.
 
-### 10.1 The risk of the bytecode VM being wasted work
+### 10.1 The bytecode VM: resolved in stage 4, re-measured in stage 5
 
-**Resolved in stage 4. The VM does not survive into the native backend, and it
-was measured rather than assumed.**
+**The native backend is an ahead-of-time compiler consuming
+`crates/vortexc/src/ir.rs`. The bytecode VM is not on the path to it. The VM is
+kept as a test oracle rather than discarded.**
 
-The risk was that stage 4 builds a virtual machine that stage 5 replaces, which
-would be dead work. Stage 4 measured it:
+Stage 4 measured the VM as about 1.5 times slower than the tree interpreter,
+and named two untried changes as the things that might reverse it. Stage 5 tried
+both and both are reverted:
 
-| Engine | Wall clock on the benchmark workload |
-| --- | --- |
-| Vortex, tree interpreter | 3217 ms |
-| Vortex, bytecode VM | 4913 ms |
+- **A frame allocated operand stack** was worse at every size tried, 5419 ms at
+  256 slots and 5283 ms at 32, against a 4939 ms baseline. The array has to be
+  filled with `Value::Unit` on every frame and at 72 bytes a `Value` that fill is
+  the cost. It was never a reallocation problem, because the `Vec` never
+  reallocated in practice.
+- **Boxing the string payload to avoid a `Value` clone** was inside the jitter
+  across three rounds of five runs, and did not shrink `Value` at all, because
+  `Vec<Value>` in the tuple and struct variants is what fills the enum.
 
-**The VM is about 1.53 times slower than the tree interpreter.** It is kept for
-one reason and one reason only: it is a second consumer of the lowered form, so
-`crates/vortexc/src/ir.rs` is exercised by a second executor, and the stage 2
-and 3 test suites run against it unchanged. That is what found the loop defects
-recorded in `bench/vortex/README.md`, and it is worth that.
+So the premise that produced the VM, that per node dispatch was the cost, was
+wrong. A Rust tree walk recurses, so a Vortex call becomes native calls the
+optimiser already inlines, while a VM pays for an instruction walk, an enum match
+per instruction and an operand stack per operand. Bytecode is the wrong
+intermediate for a language interpreted dynamically, and the tree is the shape a
+code generator wants.
 
-It is not kept because it is faster, because it is not. The premise it was
-built on, that per node dispatch was the cost, was wrong. A tree walk in Rust
-recurses, so a Vortex call becomes native calls the optimiser already inlines.
-The VM instead walks a `Vec<Instr>`, matches on an enum per instruction, and
-pushes and pops a `Vec<Value>` per operand, which is work the tree walk never
-had. Removing dispatch was not where the time went.
+The VM is kept anyway, because comparing two independently written readings of
+the semantics found twelve defects in stage 4, eight of them silent wrong
+answers rather than crashes. That is worth more than its speed.
 
-So the native backend does not consume the VM. It consumes
-`crates/vortexc/src/ir.rs`, the same lowered form the tree interpreter and the
-VM both walk, which is what lowering once in stage 2 was for. The VM becomes a
-test oracle rather than an execution path, and stage 5 should not spend its
-budget optimising it.
+**Falsifier for the decision that the VM is not the path:** a bytecode VM that
+beats the tree interpreter on the benchmark workload by more than the 60 ms
+run to run jitter on this host, after a frame allocated stack and uninitialised
+frame slots have both been tried. Uninitialised slots is the change most likely
+to do it, since it removes the clone the boxing only partly addressed. It needs
+`unsafe`, which section 7.3 currently restricts to modules with a foreign
+interface, so it is a deliberate amendment rather than something to slip in.
 
-What would change this decision, stated in advance so it is not argued later: a
-measured VM that beats the tree interpreter on the benchmark workload. A frame
-allocated operand stack instead of a `Vec`, and avoiding the `Value` clone on
-every store and load, are the two changes most likely to do it. Neither has been
-tried, so neither is claimed.
+**Falsifier for keeping the VM as a test oracle:** two full rounds of the example
+set and both test suites on both engines finding nothing new. At that point it
+has stopped being an independent reading and should be deleted rather than kept
+out of sentiment.
 
-The lowering pass itself was not at risk and is unchanged: the frontend lowers
-once and the native backend is a third consumer of the result.
+Full reasoning and measurements are in `DECISION.md`.
 
 ## 11. Open questions
 
