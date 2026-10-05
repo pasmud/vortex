@@ -2,29 +2,46 @@
 
 ## A recorded Vortex result
 
-The comparison table has Vortex rows for both execution engines. **All four rows
-run the same program**, a sieve of Eratosthenes over 2,000,000 plus a 256 by 256
-floating point matrix multiply, and all four print the same checksum. The
+The comparison table has Vortex rows for all three execution paths. **All five
+rows run the same program**, a sieve of Eratosthenes over 2,000,000 plus a 256 by
+256 floating point matrix multiply, and all five print the same checksum. The
 checksum is shown in full, including the float, so a reader can see that the
 same work was measured rather than being asked to take it on trust.
 
 | Language and engine | Wall clock | Sieve sum | Matrix sum | Full checksum |
 | --- | --- | --- | --- | --- |
-| C | 18 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
-| Rust | 18 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
-| Vortex, tree interpreter | 3217 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
-| Vortex, bytecode VM | 4913 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| C | 17 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Rust | 17 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Vortex, compiled to C | 42 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Vortex, tree interpreter | 3257 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
+| Vortex, bytecode VM | 4940 ms | 1179908154 | 3314.003906 | `1179908154 3314.003906` |
 
-Raw harness output for the tree interpreter row is committed at
-`bench/results/stage3-tree-interpreter.txt`, and for both Vortex rows at
-`bench/results/stage4-vm.txt`. Both were produced by:
+Raw harness output for the compiled row and for both Vortex engine rows is
+committed at `bench/results/stage8-compiled-full.txt`. It was produced by:
 
-    bench/run.sh --repeats 5
+    bench/measure-all.sh --repeats 5
+
+Every individual run is printed in that file rather than only the fastest, and
+the numbers in the table are the fastest of five for each row. The compiled row
+spans 42 ms to 53 ms across its five runs, a spread wide enough that quoting one
+figure alone would misrepresent it, so the table gives the fastest and the
+transcript gives the rest. The tree interpreter spans 3257 ms to 3589 ms and the
+VM spans 4940 ms to 4981 ms.
+
+The compiled row covers the whole workload. It did not until stage 8: it was
+sieve only, and `STAGE7.md` records why that label was accurate when it was
+written and why it was removed.
+
+The earlier Vortex engine figures are committed at
+`bench/results/stage3-tree-interpreter.txt` and `bench/results/stage4-vm.txt`,
+produced by `bench/run.sh --repeats 5`. They are superseded by the table above,
+which re-measured both engines in the same session as the compiled path so the
+three are comparable.
 
 ### The VM is slower than the tree interpreter
 
-**The bytecode VM is about 1.53 times slower than the tree interpreter on
-this workload: 4913 ms against 3217 ms.** That is a disappointing number and
+**The bytecode VM is about 1.52 times slower than the tree interpreter on
+this workload: 4940 ms against 3257 ms.** That is a disappointing number and
 it is published rather than omitted, because it is a fact about this
 implementation.
 
@@ -49,14 +66,23 @@ that would change it are a frame-allocated operand stack rather than a `Vec`, an
 avoiding the `Value` clone on every store and load. Neither has been tried, so
 neither is claimed.
 
-**No Vortex speed claim is made beyond this table.** Vortex is roughly
-273 times slower than C here. That is a fact about a stage 4 tree
-interpreter and a stage 4 bytecode VM, not about the design of the language, and
-not about where it could end up.
+**No Vortex speed claim is made beyond this table.** The tree interpreter is
+roughly 192 times slower than C here and the VM roughly 291 times. Those are
+facts about a stage 4 interpreter and a stage 4 VM, not about the design of the
+language, and not about where it could end up.
+
+The compiled path is about 2.5 times slower than the C baseline and about 78
+times faster than the tree interpreter on the same program. That gap to C is the
+honest headline for stage 8: the emitter still spills every value to a slot in
+memory and never allocates a register, which is the largest single item
+between a compiled Vortex program and a hand written C one. It is not measured
+yet, so it is not claimed here.
 
 The Vortex matrix half needed the `as` cast, which stage 4 added. Before it, the
-Vortex row covered the sieve only and the table said so. It no longer needs to,
-and this table reflects what was measured rather than what was possible before.
+Vortex row covered the sieve only and the table said so. Stage 8 fixed four
+further defects in the compiled path, recorded in `FLOAT-DEFECT.md`, and only
+then could the compiled row measure the same work as the others. The label was
+removed because it stopped being true, not because it became inconvenient.
 
 ## What the three rows measure
 
@@ -113,17 +139,18 @@ every run, so a committed transcript always carries its own provenance.
 this repository unless it was produced by `bench/run.sh`, on a machine recorded
 here, with the raw output committed. Estimates and projections are not evidence.
 
-A result is added by a person, not by the harness. `bench/run.sh` prints; it
-does not write to this file. `scripts/check-benchmarks.sh` checks that the
-machine specification and the committed raw output are present, that the
-recorded numbers appear in this file, and that all four rows of the committed
-output carry the same checksum.
+A result is added by a person, not by the harness. `bench/run.sh` and
+`bench/measure-all.sh` print; they do not write to this file.
+`scripts/check-benchmarks.sh` checks that the machine specification and the
+committed raw output are present, that every wall clock number quoted in this
+repository appears in the transcript for its row, that every row carries the
+full checksum, and that the compiled Vortex row is not labelled sieve only.
 
 ## Why one workload is not enough
 
 A language comparison resting on one workload proves very little, and this table
-proves that directly: it says the bytecode VM is about 1.53 times slower
-than the tree interpreter, and about 273 times slower than C, on a sieve.
+proves that directly: it says the bytecode VM is about 1.52 times slower
+than the tree interpreter, and about 291 times slower than C, on a sieve.
 That says nothing about integer arithmetic in general, because the dominant cost
 here is the interpreter's execution model rather than the arithmetic. Later stages add more than one workload before any
 conclusion is drawn about relative speed.
