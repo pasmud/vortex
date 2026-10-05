@@ -851,12 +851,16 @@ pub fn emit_program(
         .enumerate()
         .map(|(i, _)| args.get(i).cloned().unwrap_or_else(|| "0".to_string()))
         .collect();
-    let _ = writeln!(
-        out,
-        "    return {}({});",
-        param_name(entry),
-        params.join(", ")
-    );
+    if entry_c_type(functions, entry) == "void" {
+        let _ = writeln!(out, "    {}({});", param_name(entry), params.join(", "));
+    } else {
+        let _ = writeln!(
+            out,
+            "    return {}({});",
+            param_name(entry),
+            params.join(", ")
+        );
+    }
     let _ = writeln!(out, "}}\n");
 
     // The Vortex entry is run and whatever it printed goes to standard output,
@@ -868,6 +872,13 @@ pub fn emit_program(
     // disagreeing with the two engines on the matrix half.
     let entry_c = entry_c_type(functions, entry);
     let _ = writeln!(out, "int main(void) {{");
+    if entry_c == "void" {
+        // Nothing to print: the program printed its own answer.
+        let _ = writeln!(out, "    vortex_c_entry();");
+        let _ = writeln!(out, "    return 0;\n}}");
+        let _ = args;
+        return Ok(out);
+    }
     let _ = writeln!(out, "    {} r = vortex_c_entry();", entry_c);
     // A program that prints its own answer has already written it, so the
     // returned value is written after a marker the harness can strip.
@@ -901,7 +912,11 @@ fn entry_c_type(functions: &[Spanned<ast::FnDecl>], entry: &str) -> &'static str
         .find(|f| f.node.name == entry)
         .and_then(|f| f.node.ret.as_ref())
         .and_then(|t| c_type(t))
-        .unwrap_or("int64_t")
+        // A function that declares no return type returns nothing. Reporting it
+        // as int64_t made the generated entry `return f();` on a void
+        // function, which gcc at -O2 accepts with a warning and gcc at -O0
+        // rejects.
+        .unwrap_or("void")
 }
 
 /// The names reachable from `entry`, which is the set worth emitting.

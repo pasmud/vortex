@@ -60,7 +60,7 @@ CBIN="/tmp/vortex-cgen/program"
 # line is what carries the answer. Reading the return value would report 0.
 CBIN_ANSWER=$("$CBIN" 2>/dev/null | sed -n 's/^checksum //p')
 
-echo "Vortex execution path measurement, stage 8"
+echo "Vortex execution path measurement, stage ${MEASURE_STAGE:-10}"
 echo "=========================================="
 echo
 echo "Repeats:        $REPEATS"
@@ -96,6 +96,14 @@ measure() {
 measure "C" "$BUILD/c_sieve"
 measure "Rust" "$BUILD/rust_bench"
 measure "Vortex C" "$CBIN"
+
+# The same emitted C built at -O0. Stage 10 measures what gcc at -O0 does with
+# it. This is a gcc figure, not a Vortex one: BENCHMARKS.md compares -O2.
+rm -f /tmp/vortex-cgen/*
+VORTEX_C_OPT=-O0 "$CRUNNER" "$WORK" main >/dev/null
+CBIN_O0="/tmp/vortex-cgen/program"
+[ -x "$CBIN_O0" ] || { echo "the -O0 compiled binary was not produced" >&2; exit 1; }
+measure "Vortex C -O0" "$CBIN_O0"
 measure "Vortex tree" "$RUNNER" "$WORK"
 measure "Vortex VM" "$RUNNER" "$WORK" --vm
 

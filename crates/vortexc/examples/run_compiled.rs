@@ -92,8 +92,14 @@ fn main() {
     }
 
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    // The optimisation level is settable so the same emitted C can be built at
+    // different levels and compared. Stage 10 measures what gcc at -O0 does
+    // with the emitted C; BENCHMARKS.md compares -O2, so the default is
+    // unchanged.
+    let opt = std::env::var("VORTEX_C_OPT").unwrap_or_else(|_| "-O2".to_string());
     let build = Command::new(&cc)
-        .args(["-O2", "-o"])
+        .arg(&opt)
+        .args(["-o"])
         .arg(&bin)
         .arg(&cfile)
         .output()
