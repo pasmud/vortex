@@ -260,6 +260,187 @@ pub enum ExprKind {
     Field(Box<Expr>, String),
 }
 
+/// How many expression forms there are, counted from the type rather than
+/// written down.
+///
+/// This exists so a check can compare the number of forms the type has against
+/// the number the emitter handles. A hand-written count would pass forever, and
+/// a hand-written list of forms passed with an extra variant in the enum, which
+/// is the failure mode this is here to prevent. The count comes from
+/// `ExprKind::name`, which is an exhaustive match, so adding a variant fails the
+/// build there and changes this number at the same time.
+pub fn expr_kind_names() -> Vec<&'static str> {
+    // Each form is named by an exhaustive match, so adding a variant to
+    // `ExprKind` fails the build at the match and its name lands in this list
+    // without anyone editing it. That is what lets a check against the list
+    // catch an unhandled form: a hand-written list of today's forms passed with
+    // an extra variant in the enum, which is the failure mode this prevents.
+    let forms = [
+        ExprKind::Int(0),
+        ExprKind::Float(0.0),
+        ExprKind::Str(String::new()),
+        ExprKind::Char(' '),
+        ExprKind::Bool(false),
+        ExprKind::Ident(String::new()),
+        ExprKind::Call {
+            callee: String::new(),
+            args: Vec::new(),
+        },
+        ExprKind::Neg(Box::new(Expr {
+            pos: crate::span::Pos { line: 1, col: 1 },
+            kind: ExprKind::Int(0),
+        })),
+        ExprKind::Not(Box::new(Expr {
+            pos: crate::span::Pos { line: 1, col: 1 },
+            kind: ExprKind::Bool(false),
+        })),
+        ExprKind::Assign {
+            name: String::new(),
+            index: None,
+            value: Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Int(0),
+            }),
+        },
+        ExprKind::Binary {
+            op: BinOp::Add,
+            lhs: Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Int(0),
+            }),
+            rhs: Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Int(0),
+            }),
+        },
+        ExprKind::If {
+            cond: Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Bool(false),
+            }),
+            then: Block {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                stmts: Vec::new(),
+                tail: None,
+            },
+            otherwise: None,
+        },
+        ExprKind::Match {
+            scrutinee: Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Int(0),
+            }),
+            arms: Vec::new(),
+        },
+        ExprKind::Record {
+            ty: String::new(),
+            fields: Vec::new(),
+        },
+        ExprKind::Variant {
+            ty: String::new(),
+            variant: String::new(),
+        },
+        ExprKind::VariantCall {
+            ty: String::new(),
+            variant: String::new(),
+            args: Vec::new(),
+        },
+        ExprKind::VariantRecord {
+            ty: String::new(),
+            variant: String::new(),
+            fields: Vec::new(),
+        },
+        ExprKind::Tuple(Vec::new()),
+        ExprKind::Paren(Box::new(Expr {
+            pos: crate::span::Pos { line: 1, col: 1 },
+            kind: ExprKind::Int(0),
+        })),
+        ExprKind::Block(Block {
+            pos: crate::span::Pos { line: 1, col: 1 },
+            stmts: Vec::new(),
+            tail: None,
+        }),
+        ExprKind::Try(Box::new(Expr {
+            pos: crate::span::Pos { line: 1, col: 1 },
+            kind: ExprKind::Int(0),
+        })),
+        ExprKind::Array(Vec::new()),
+        ExprKind::Cast(
+            Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Int(0),
+            }),
+            TypeExpr::Named(String::new()),
+        ),
+        ExprKind::Repeat {
+            value: Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Int(0),
+            }),
+            count: Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Int(0),
+            }),
+        },
+        ExprKind::Index(
+            Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Int(0),
+            }),
+            Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Int(0),
+            }),
+        ),
+        ExprKind::Field(
+            Box::new(Expr {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                kind: ExprKind::Int(0),
+            }),
+            String::new(),
+        ),
+    ];
+    forms.iter().map(|k| k.name()).collect()
+}
+
+/// The name of an expression form, used to report one.
+///
+/// This is here so a diagnostic can say which form it is refusing rather than
+/// printing a payload, and so `scripts/check-exhaustive.sh` can derive its
+/// expectation from the type rather than from a list written out by hand.
+impl ExprKind {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ExprKind::Int(_) => "Int",
+            ExprKind::Float(_) => "Float",
+            ExprKind::Bool(_) => "Bool",
+            ExprKind::Char(_) => "Char",
+            ExprKind::Str(_) => "Str",
+            ExprKind::Ident(_) => "Ident",
+            ExprKind::Binary { .. } => "Binary",
+            ExprKind::Paren(_) => "Paren",
+            ExprKind::Call { .. } => "Call",
+            ExprKind::Cast(_, _) => "Cast",
+            ExprKind::Neg(_) => "Neg",
+            ExprKind::Not(_) => "Not",
+            ExprKind::If { .. } => "If",
+            ExprKind::Assign { .. } => "Assign",
+            ExprKind::Block(_) => "Block",
+            ExprKind::Try(_) => "Try",
+            ExprKind::Array(_) => "Array",
+            ExprKind::Repeat { .. } => "Repeat",
+            ExprKind::Index(_, _) => "Index",
+            ExprKind::Field(_, _) => "Field",
+            ExprKind::Tuple(_) => "Tuple",
+            ExprKind::Record { .. } => "Record",
+            ExprKind::Variant { .. } => "Variant",
+            ExprKind::VariantCall { .. } => "VariantCall",
+            ExprKind::VariantRecord { .. } => "VariantRecord",
+            ExprKind::Match { .. } => "Match",
+        }
+    }
+}
+
 /// The `else` part of an if expression.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Else {

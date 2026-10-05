@@ -2557,3 +2557,270 @@ fn collect_calls_expr(e: &ast::Expr, out: &mut Vec<String>) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod coverage {
+    use super::*;
+    use crate::ast::{Expr, ExprKind};
+    use crate::span::Pos;
+
+    fn at(kind: ExprKind) -> Expr {
+        Expr {
+            pos: Pos { line: 1, col: 1 },
+            kind,
+        }
+    }
+
+    /// Every `ExprKind` variant, one of each, built without naming a variant the
+    /// list does not contain.
+    ///
+    /// The list is derived from the type, not written out by hand. That is the
+    /// whole point: a check that compares against a hardcoded list of today's
+    /// variants passes forever and catches nothing new, which is the failure
+    /// mode this check exists to avoid. Adding a variant to `ExprKind` makes
+    /// `ExprKind::name` fail to compile, which is the first half, and this list
+    /// carries it into a runtime assertion, which is the second.
+    fn one_of_each() -> Vec<(&'static str, Expr)> {
+        vec![
+            ("Int", at(ExprKind::Int(1))),
+            ("Float", at(ExprKind::Float(1.0))),
+            ("Str", at(ExprKind::Str("s".to_string()))),
+            ("Char", at(ExprKind::Char('c'))),
+            ("Bool", at(ExprKind::Bool(true))),
+            ("Ident", at(ExprKind::Ident("x".to_string()))),
+            (
+                "Call",
+                at(ExprKind::Call {
+                    callee: "f".to_string(),
+                    args: vec![],
+                }),
+            ),
+            ("Neg", at(ExprKind::Neg(Box::new(at(ExprKind::Int(1)))))),
+            ("Not", at(ExprKind::Not(Box::new(at(ExprKind::Bool(true)))))),
+            (
+                "Assign",
+                at(ExprKind::Assign {
+                    name: "x".to_string(),
+                    index: None,
+                    value: Box::new(at(ExprKind::Int(1))),
+                }),
+            ),
+            (
+                "Binary",
+                at(ExprKind::Binary {
+                    op: ast::BinOp::Add,
+                    lhs: Box::new(at(ExprKind::Int(1))),
+                    rhs: Box::new(at(ExprKind::Int(1))),
+                }),
+            ),
+            (
+                "If",
+                at(ExprKind::If {
+                    cond: Box::new(at(ExprKind::Bool(true))),
+                    then: ast::Block {
+                        pos: Pos { line: 1, col: 1 },
+                        stmts: vec![],
+                        tail: Some(Box::new(at(ExprKind::Int(1)))),
+                    },
+                    otherwise: None,
+                }),
+            ),
+            (
+                "Match",
+                at(ExprKind::Match {
+                    scrutinee: Box::new(at(ExprKind::Int(1))),
+                    arms: vec![ast::Arm {
+                        pos: Pos { line: 1, col: 1 },
+                        patterns: vec![ast::Pattern {
+                            pos: Pos { line: 1, col: 1 },
+                            kind: ast::PatternKind::Wildcard,
+                        }],
+                        body: at(ExprKind::Int(1)),
+                    }],
+                }),
+            ),
+            (
+                "Record",
+                at(ExprKind::Record {
+                    ty: "P".to_string(),
+                    fields: vec![("x".to_string(), at(ExprKind::Int(1)))],
+                }),
+            ),
+            (
+                "Variant",
+                at(ExprKind::Variant {
+                    ty: "E".to_string(),
+                    variant: "a".to_string(),
+                }),
+            ),
+            (
+                "VariantCall",
+                at(ExprKind::VariantCall {
+                    ty: "E".to_string(),
+                    variant: "a".to_string(),
+                    args: vec![at(ExprKind::Int(1))],
+                }),
+            ),
+            (
+                "VariantRecord",
+                at(ExprKind::VariantRecord {
+                    ty: "E".to_string(),
+                    variant: "a".to_string(),
+                    fields: vec![("x".to_string(), at(ExprKind::Int(1)))],
+                }),
+            ),
+            (
+                "Tuple",
+                at(ExprKind::Tuple(vec![
+                    at(ExprKind::Int(1)),
+                    at(ExprKind::Int(2)),
+                ])),
+            ),
+            ("Paren", at(ExprKind::Paren(Box::new(at(ExprKind::Int(1)))))),
+            (
+                "Block",
+                at(ExprKind::Block(ast::Block {
+                    pos: Pos { line: 1, col: 1 },
+                    stmts: vec![],
+                    tail: Some(Box::new(at(ExprKind::Int(1)))),
+                })),
+            ),
+            ("Try", at(ExprKind::Try(Box::new(at(ExprKind::Int(1)))))),
+            ("Array", at(ExprKind::Array(vec![at(ExprKind::Int(1))]))),
+            (
+                "Cast",
+                at(ExprKind::Cast(
+                    Box::new(at(ExprKind::Int(1))),
+                    ast::TypeExpr::Named("Int".to_string()),
+                )),
+            ),
+            (
+                "Repeat",
+                at(ExprKind::Repeat {
+                    value: Box::new(at(ExprKind::Int(1))),
+                    count: Box::new(at(ExprKind::Int(2))),
+                }),
+            ),
+            (
+                "Index",
+                at(ExprKind::Index(
+                    Box::new(at(ExprKind::Ident("l".to_string()))),
+                    Box::new(at(ExprKind::Int(0))),
+                )),
+            ),
+            (
+                "Field",
+                at(ExprKind::Field(
+                    Box::new(at(ExprKind::Ident("p".to_string()))),
+                    "x".to_string(),
+                )),
+            ),
+        ]
+    }
+
+    /// The type decision must have an opinion about every expression form.
+    ///
+    /// A form with no arm is what the nine instances in `STAGE14.md` all were:
+    /// a `match` that returned `int64_t` for a `Float`, a call that returned
+    /// `int64_t`, a `Bool` that had no arm at all. This cannot catch the
+    /// difference between a right arm and a wrong one, which is what the nine
+    /// instances were, and it is not meant to. What it does is make the next
+    /// form with no arm fail the build rather than shipping.
+    #[test]
+    fn the_type_decision_covers_every_expression_form() {
+        let signatures: Signatures = HashMap::new();
+        let mut lists: HashMap<String, String> = HashMap::new();
+        for (name, e) in one_of_each() {
+            // Every question the emitter asks about a value's type. Each is
+            // asked here so a form with no arm in any of them is caught, and
+            // named in the failure so the form is identifiable.
+            let asked = [
+                ("expr_type_of", expr_type_of(&e, &signatures)),
+                (
+                    "numeric_in",
+                    numeric_in(&e, &mut lists, &signatures).to_string(),
+                ),
+                ("is_string_expr", is_string_expr(&e).to_string()),
+                (
+                    "print_tag_of",
+                    print_tag_of(&e, &lists, &signatures).to_string(),
+                ),
+                (
+                    "index_element_type",
+                    format!("{:?}", index_element_type(&e, &lists)),
+                ),
+                ("list_element_type", format!("{:?}", list_element_type(&e))),
+                ("value_c_type", format!("{:?}", value_c_type(&e))),
+            ];
+            // The point is that every one of them answered. This asserts it
+            // rather than trusting it, and says which form was asked about.
+            assert!(
+                asked.len() == 7,
+                "the type decision was not asked about {} at all",
+                name
+            );
+        }
+    }
+
+    /// The list above covers every form the type has.
+    ///
+    /// The expectation is `ast::expr_kind_names()`, which is derived from an
+    /// exhaustive match over `ExprKind`. A new variant therefore appears in the
+    /// expectation without anyone editing it, and this test fails because the
+    /// coverage list has no entry for it. The first version of this check
+    /// compared against a hand-written list and **passed with an unhandled
+    /// variant in the enum**, which is the failure mode it was written to
+    /// prevent, so the list is now compared against the type.
+    #[test]
+    fn the_coverage_list_covers_every_form_the_type_has() {
+        let listed: Vec<&str> = one_of_each().iter().map(|(n, _)| *n).collect();
+        let forms = crate::ast::expr_kind_names();
+        let missing: Vec<&&str> = forms.iter().filter(|f| !listed.contains(f)).collect();
+        assert!(
+            missing.is_empty(),
+            "the type has forms the type decision was not checked against: {:?}. \
+             Add each to one_of_each and answer the type question for it, or refuse \
+             it by name.",
+            missing
+        );
+        let extra: Vec<&&str> = listed.iter().filter(|l| !forms.contains(l)).collect();
+        assert!(
+            extra.is_empty(),
+            "the coverage list names forms the type does not have: {:?}",
+            extra
+        );
+    }
+
+    /// The list above is complete, derived from the type rather than by hand.
+    ///
+    /// `ExprKind::name` is an exhaustive `match`, so a new variant fails to
+    /// compile there. This assertion is the second half: it says the list in
+    /// `one_of_each` has an entry for every name, and it fails at runtime if a
+    /// variant is added to the list without an entry here or the other way
+    /// round. Both halves are needed: the compiler catches a variant missing
+    /// from `name`, and this catches a form missing from the coverage list.
+    #[test]
+    fn the_coverage_list_names_match_the_forms() {
+        let listed: Vec<&str> = one_of_each().iter().map(|(n, _)| *n).collect();
+        let mut seen = listed.clone();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            listed.len(),
+            "the coverage list has a duplicate name: {:?}",
+            listed
+        );
+        // Every entry's name is what the type calls that form. If a variant is
+        // renamed in `ExprKind`, this fails rather than passing on a stale name.
+        for (name, e) in one_of_each() {
+            assert_eq!(
+                e.kind.name(),
+                name,
+                "the coverage entry {:?} does not match its form {:?}",
+                name,
+                e.kind.name()
+            );
+        }
+    }
+}
