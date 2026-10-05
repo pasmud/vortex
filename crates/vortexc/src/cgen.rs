@@ -252,12 +252,22 @@ fn string_base_type(
 }
 
 /// The name suffix for the constructor of a list of this element type.
-fn list_suffix(elem: &str) -> &'static str {
+///
+/// A declared struct or enum is named by its C name, so the constructor carries
+/// the right element size rather than the size of an int64_t.
+fn list_suffix(elem: &str) -> String {
     match elem {
-        "double" => "f64",
-        "const char *" => "str",
-        _ => "i64",
+        "double" => "f64".to_string(),
+        "const char *" => "str".to_string(),
+        "int64_t" => "i64".to_string(),
+        other => other.to_string(),
     }
+}
+
+/// Every declared struct and enum C name, which is what a list of one needs a
+/// constructor for.
+fn declared_types() -> Vec<String> {
+    DECLARED.with(|d| d.borrow().iter().map(|n| format!("C{n}")).collect())
 }
 
 /// The C element type a list initialiser produces, if it produces a list.
@@ -265,6 +275,10 @@ fn list_suffix(elem: &str) -> &'static str {
 /// The rule matches the one the lowering pass uses: a literal takes the type of
 /// its first element, which is sound because the checker rejects a mixed list,
 /// and a repeat takes the type of the value it repeats.
+///
+/// A declared struct or enum is a valid element type. It was not, so a list of
+/// one fell back to `int64_t` and every Float field truncated, which is a wrong
+/// answer rather than a diagnostic.
 fn list_element_type(e: &ast::Expr) -> Option<String> {
     match &e.kind {
         ast::ExprKind::Array(items) => items.first().and_then(value_c_type),
@@ -274,19 +288,53 @@ fn list_element_type(e: &ast::Expr) -> Option<String> {
     }
 }
 
-/// The element type a base expression produces, when the base is itself a list
-/// expression rather than a name.
-fn list_element_type_index(base: &ast::Expr, _other: &ast::ExprKind) -> Option<String> {
-    list_element_type(base)
+/// The element type a list expression produces, or a refusal naming why not.
+///
+/// Everything that used to default to `int64_t` is checked here. A list whose
+/// element type the emitter cannot name is refused at its position rather than
+/// read at a type that happens to be right for `Int`.
+fn list_element_type_or_refuse(e: &ast::Expr) -> Result<String, Unsupported> {
+    if let Some(t) = list_element_type(e) {
+        return Ok(t);
+    }
+    // A name has no element type of its own, so it is looked up by the caller.
+    Err(Unsupported::Construct(
+        format!(
+            "a list of {}",
+            describe_unnameable(e)
+                .unwrap_or_else(|| "a value whose type the emitter cannot name".to_string())
+        ),
+        e.pos,
+    ))
 }
 
-/// The C type of a scalar value expression.
+/// A short description of an expression whose type the emitter cannot name, used
+/// in the refusal so the message names the construct rather than saying
+/// "unsupported".
+fn describe_unnameable(e: &ast::Expr) -> Option<String> {
+    match &e.kind {
+        ast::ExprKind::Ident(n) => Some(format!("`{}`, whose type the emitter cannot name", n)),
+        ast::ExprKind::Call { callee, .. } => Some(format!("the result of `{callee}`")),
+        ast::ExprKind::Match { .. } => Some("a `match` result".to_string()),
+        ast::ExprKind::If { .. } => Some("an `if` result".to_string()),
+        _ => None,
+    }
+}
+
+/// The C type of a value expression, including a declared struct or enum.
 fn value_c_type(e: &ast::Expr) -> Option<String> {
     match &e.kind {
         ast::ExprKind::Int(_) => Some("int64_t".to_string()),
         ast::ExprKind::Float(_) => Some("double".to_string()),
         ast::ExprKind::Str(_) => Some("const char *".to_string()),
         ast::ExprKind::Cast(_, t) => c_type(t),
+        // A record or a variant is a declared struct or enum in the generated
+        // C, so its element type is that struct. Reading one as `int64_t`
+        // truncated every Float field.
+        ast::ExprKind::Record { ty, .. }
+        | ast::ExprKind::Variant { ty, .. }
+        | ast::ExprKind::VariantCall { ty, .. }
+        | ast::ExprKind::VariantRecord { ty, .. } => c_type_named(ty).or_else(|| None),
         _ => None,
     }
 }
@@ -302,13 +350,24 @@ fn emit_stmt(
     match &s.kind {
         ast::StmtKind::Let { name, init, .. } => {
             let c = expr_type_of(init, signatures);
-            // A list binding records its element type, so an index into this
-            // name reads through the right cast later in the same walk.
-            if let Some(elem) = list_element_type(init) {
-                lists.insert(param_name(name), elem);
+            // Every binding is recorded at the type its initialiser has, so a
+            // later `+` on the name can tell arithmetic from concatenation and
+            // an index can read at the right element type. Only lists and
+            // strings were recorded before, which left every plain number
+            // unknown and therefore ambiguous.
+            match c.as_str() {
+                "CList" => {
+                    if let Some(elem) = list_element_type(init) {
+                        lists.insert(param_name(name), elem);
+                    }
+                }
+                "const char *" => {
+                    lists.insert(param_name(name), "const char *".to_string());
+                }
+                other => {
+                    lists.insert(param_name(name), other.to_string());
+                }
             }
-            // A string binding is recorded too, so indexing it can be refused
-            // by name rather than emitted as a list access.
             if expr_type_of(init, signatures) == "const char *" {
                 lists.insert(param_name(name), "const char *".to_string());
             }
@@ -340,13 +399,19 @@ fn emit_stmt(
                     // The element type comes from the name the base is bound
                     // to, recorded when that declaration was emitted.
                     let elem = match &base.kind {
-                        ast::ExprKind::Ident(n) => lists
-                            .get(&param_name(n))
-                            .cloned()
-                            .unwrap_or_else(|| "int64_t".to_string()),
-                        other => list_element_type_index(base, other)
-                            .or_else(|| list_element_type(base))
-                            .unwrap_or_else(|| "int64_t".to_string()),
+                        ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).cloned() {
+                            Some(t) => t,
+                            None => {
+                                return Err(Unsupported::Construct(
+                                    format!(
+                                    "a store into `{}`, whose element type the emitter cannot name",
+                                    n
+                                ),
+                                    s.pos,
+                                ))
+                            }
+                        },
+                        _ => list_element_type_or_refuse(base)?,
                     };
                     let _ = writeln!(
                         out,
@@ -452,6 +517,9 @@ fn emit_stmt(
             } else {
                 emit_expr(end, lists, signatures)?
             };
+            // The counting form's variable is an Int binding, recorded so a
+            // later `+` on it is arithmetic rather than ambiguous.
+            lists.insert(param_name(var), "int64_t".to_string());
             indent(out, depth);
             let _ = writeln!(
                 out,
@@ -664,12 +732,21 @@ fn emit_expr(
             // itself when it is a literal or a repeat. It is never inferred
             // from the index, because a Float list still has an Int index.
             let elem = match &base.kind {
-                ast::ExprKind::Ident(n) => lists
-                    .get(&param_name(n))
-                    .cloned()
-                    .or_else(|| list_element_type(base))
-                    .unwrap_or_else(|| "int64_t".to_string()),
-                _ => list_element_type(base).unwrap_or_else(|| "int64_t".to_string()),
+                ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).cloned() {
+                    Some(t) => t,
+                    // An unknown name is not an Int list. Reading it as one
+                    // truncated every Float element, so it is refused here.
+                    None => {
+                        return Err(Unsupported::Construct(
+                            format!(
+                                "an index into `{}`, whose element type the emitter cannot name",
+                                n
+                            ),
+                            e.pos,
+                        ))
+                    }
+                },
+                _ => list_element_type_or_refuse(base)?,
             };
             let b = emit_expr(base, lists, signatures)?;
             let i = emit_expr(index, lists, signatures)?;
@@ -748,24 +825,35 @@ fn emit_expr(
             let mut inits = vec![".tag = 0".to_string(), format!(".variant = {index}")];
             if !values.is_empty() {
                 let vals = values.join(", ");
-                let first = types
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "int64_t".to_string());
-                if types.iter().any(|t| *t != first) {
-                    return Err(Unsupported::Construct(
-                        format!(
-                            "a `{}` variant whose payload fields have different types",
-                            variant
-                        ),
-                        e.pos,
+                if types.iter().all(|t| *t == types[0]) {
+                    // One type throughout, so a C array carries it.
+                    inits.push(format!(
+                        ".payload = (({t}[]){{{vals}}})",
+                        t = types[0],
+                        vals = vals
+                    ));
+                } else {
+                    // Mixed payload types are not a C array, so they go in a
+                    // generated struct with one field each. The read side
+                    // reaches them by the same field.
+                    let name = payload_struct_name(ty, variant);
+                    let fields: Vec<String> = types
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| format!("{t} f{i};"))
+                        .collect();
+                    PAYLOAD_STRUCTS.with(|d| {
+                        let mut v = d.borrow_mut();
+                        if !v.iter().any(|(n, _)| *n == name) {
+                            v.push((name.clone(), fields.join(" ")));
+                        }
+                    });
+                    inits.push(format!(
+                        ".payload = (void *)&(({name}){{{vals}}})",
+                        name = name,
+                        vals = vals
                     ));
                 }
-                inits.push(format!(
-                    ".payload = (({t}[]){{{vals}}})",
-                    t = first,
-                    vals = vals
-                ));
             } else {
                 inits.push(".payload = 0".to_string());
             }
@@ -908,6 +996,9 @@ fn emit_for_in(
         c = collection
     );
     indent(out, depth + 1);
+    // The loop variable is a binding at the element type, so a later `+` on it
+    // can tell arithmetic from concatenation.
+    lists.insert(param_name(var), elem.clone());
     let _ = writeln!(
         out,
         "{t} {v} = (({t} *)({c}.items))[__vortex_i];",
@@ -1112,6 +1203,19 @@ fn is_declared_enum(name: &str) -> bool {
     ENUM_VARIANTS.with(|e| e.borrow().iter().any(|(n, _)| *n == mangled))
 }
 
+thread_local! {
+    /// The generated struct each mixed type variant is stored in, by name, so
+    /// the declaration can be emitted before any function that uses it.
+    static PAYLOAD_STRUCTS: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The name of the generated struct a variant's payload fields are stored in
+/// when their types differ.
+fn payload_struct_name(enum_name: &str, variant: &str) -> String {
+    format!("CP{}", param_name(&format!("{}_{}", enum_name, variant)))
+}
+
 /// Every payload C type of a variant, in declaration order.
 fn variant_payload_types(enum_name: &str, variant: &str) -> Vec<String> {
     let mangled = param_name(enum_name);
@@ -1179,8 +1283,20 @@ fn emit_binary(
     lists: &HashMap<String, String>,
     signatures: &Signatures,
 ) -> Result<String, Unsupported> {
-    let string_plus = matches!(op, ast::BinOp::Add)
-        && (is_string_expr_in(lhs, lists) || is_string_expr_in(rhs, lists));
+    let adding = matches!(op, ast::BinOp::Add);
+    let lhs_str = is_string_expr_in(lhs, lists);
+    let rhs_str = is_string_expr_in(rhs, lists);
+    let string_plus = adding && (lhs_str || rhs_str);
+    if adding && !string_plus && !both_numeric(lhs, rhs, lists, signatures) {
+        // Neither side is a string the emitter can see and the pair is not
+        // plainly arithmetic, so `+` might be a concatenation. Emitting C `+`
+        // would then be pointer arithmetic, so it is refused rather than
+        // guessed.
+        return Err(Unsupported::Construct(
+            "`+` where the emitter cannot tell whether an operand is a string, so it cannot choose between concatenation and arithmetic".to_string(),
+            pos,
+        ));
+    }
     if string_plus {
         return Ok(format!(
             "vortex_str_concat({}, {})",
@@ -1205,6 +1321,72 @@ fn emit_binary(
 /// arithmetic rather than concatenation. An expression whose type is not known
 /// here is treated as a scalar, which is right for every builtin that returns
 /// one.
+/// Whether a `+` is plainly arithmetic rather than possibly a concatenation.
+///
+/// Both operands have to be a number the emitter can see: an integer literal,
+/// a recorded `Int` or `Float` name, or a call whose declared return type is
+/// one. Anything else could be a string, and for a string the C `+` operator
+/// is address arithmetic rather than concatenation.
+fn both_numeric(
+    lhs: &ast::Expr,
+    rhs: &ast::Expr,
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> bool {
+    numeric_in(lhs, lists, signatures) && numeric_in(rhs, lists, signatures)
+}
+
+fn numeric_in(e: &ast::Expr, lists: &HashMap<String, String>, signatures: &Signatures) -> bool {
+    match &e.kind {
+        ast::ExprKind::Int(_) | ast::ExprKind::Float(_) | ast::ExprKind::Bool(_) => true,
+        ast::ExprKind::Cast(_, t) => t.name() == "Int" || t.name() == "Float",
+        ast::ExprKind::Paren(inner) => numeric_in(inner, lists, signatures),
+        // A recorded name is numeric when it was recorded as a number.
+        ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).map(|s| s.as_str()) {
+            Some("int64_t") | Some("double") | Some("int") | Some("int32_t") => true,
+            Some("const char *") => false,
+            _ => false,
+        },
+        // A call is numeric when the callee declares a numeric return type.
+        ast::ExprKind::Call { callee, .. } => matches!(
+            signatures.get(callee).map(|s| s.as_str()),
+            Some("int64_t") | Some("double") | Some("int") | Some("int32_t")
+        ),
+        // A comparison is a Bool, which is numeric, and an arithmetic or
+        // boolean subexpression is numeric when its operands are.
+        ast::ExprKind::Binary { op, lhs, rhs } => {
+            if matches!(
+                op,
+                ast::BinOp::Eq
+                    | ast::BinOp::Ne
+                    | ast::BinOp::Lt
+                    | ast::BinOp::Le
+                    | ast::BinOp::Gt
+                    | ast::BinOp::Ge
+                    | ast::BinOp::And
+                    | ast::BinOp::Or
+            ) {
+                true
+            } else {
+                numeric_in(lhs, lists, signatures) && numeric_in(rhs, lists, signatures)
+            }
+        }
+        // An index reads the element of a list, which is a list the emitter
+        // recorded, and a list of a number is a number.
+        ast::ExprKind::Index(base, _) => match &base.kind {
+            ast::ExprKind::Ident(n) => matches!(
+                lists.get(&param_name(n)).map(|s| s.as_str()),
+                Some("int64_t") | Some("double") | Some("int") | Some("int32_t")
+            ),
+            _ => true,
+        },
+        ast::ExprKind::Neg(inner) | ast::ExprKind::Not(inner) => {
+            numeric_in(inner, lists, signatures)
+        }
+        _ => false,
+    }
+}
+
 fn is_string_expr_in(e: &ast::Expr, lists: &HashMap<String, String>) -> bool {
     match &e.kind {
         ast::ExprKind::Ident(n) => matches!(
@@ -1391,51 +1573,6 @@ pub fn emit_program(
     let _ = writeln!(out, "    return l;");
     let _ = writeln!(out, "}}");
     let _ = writeln!(out, "");
-    // One constructor per element type. The struct carries a void * because a
-    // Vortex list is not homogeneous in C's type system, so the element type
-    // has to be named at the call site. Declaring them here means a call may
-    // appear before the definition.
-    for (suffix, elem) in [
-        ("i64", "int64_t"),
-        ("f64", "double"),
-        ("str", "const char *"),
-    ] {
-        let _ = writeln!(
-            out,
-            "static CList vortex_list_new_{suffix}(int64_t len, const {elem} *values) {{"
-        );
-        let _ = writeln!(out, "    CList l;");
-        let _ = writeln!(out, "    l.len = len;");
-        let _ = writeln!(
-            out,
-            "    l.items = malloc(sizeof({elem}) * (size_t)(len > 0 ? len : 1));"
-        );
-        let _ = writeln!(
-            out,
-            "    for (int64_t k = 0; k < len; k++) (({elem} *)l.items)[k] = values[k];"
-        );
-        let _ = writeln!(out, "    return l;");
-        let _ = writeln!(out, "}}");
-        let _ = writeln!(out, "");
-        let _ = writeln!(
-            out,
-            "static CList vortex_list_repeat_{suffix}(int64_t len, {elem} value) {{"
-        );
-        let _ = writeln!(out, "    CList l;");
-        let _ = writeln!(out, "    l.len = len;");
-        let _ = writeln!(
-            out,
-            "    l.items = malloc(sizeof({elem}) * (size_t)(len > 0 ? len : 1));"
-        );
-        let _ = writeln!(
-            out,
-            "    for (int64_t k = 0; k < len; k++) (({elem} *)l.items)[k] = value;"
-        );
-        let _ = writeln!(out, "    return l;");
-        let _ = writeln!(out, "}}");
-        let _ = writeln!(out, "");
-    }
-    let _ = writeln!(out, "");
     // Structs and enums, each as a tagged C struct so `match` can test which
     // one a value is. A struct is a tag plus its fields; an enum is a tag, a
     // variant index and up to two payload slots, which covers the positional
@@ -1485,6 +1622,61 @@ pub fn emit_program(
     }
     let _ = writeln!(out, "");
 
+    // One constructor per element type. The struct carries a void * because a
+    // Vortex list is not homogeneous in C's type system, so the element type
+    // has to be named at the call site. Declaring them here means a call may
+    // appear before the definition.
+    //
+    // A declared struct or enum gets one too, which is what a list of one
+    // needs. Without it the list fell back to the int64_t constructor and every
+    // Float field truncated.
+    let mut kinds: Vec<(&str, String)> = vec![
+        ("i64", "int64_t".to_string()),
+        ("f64", "double".to_string()),
+        ("str", "const char *".to_string()),
+    ];
+    for c in declared_types() {
+        let suffix: &'static str = Box::leak(c.clone().into_boxed_str());
+        kinds.push((suffix, c));
+    }
+    for (suffix, elem) in kinds {
+        let _ = writeln!(
+            out,
+            "static CList vortex_list_new_{suffix}(int64_t len, const {elem} *values) {{"
+        );
+        let _ = writeln!(out, "    CList l;");
+        let _ = writeln!(out, "    l.len = len;");
+        let _ = writeln!(
+            out,
+            "    l.items = malloc(sizeof({elem}) * (size_t)(len > 0 ? len : 1));"
+        );
+        let _ = writeln!(
+            out,
+            "    for (int64_t k = 0; k < len; k++) (({elem} *)l.items)[k] = values[k];"
+        );
+        let _ = writeln!(out, "    return l;");
+        let _ = writeln!(out, "}}");
+        let _ = writeln!(out, "");
+        let _ = writeln!(
+            out,
+            "static CList vortex_list_repeat_{suffix}(int64_t len, {elem} value) {{"
+        );
+        let _ = writeln!(out, "    CList l;");
+        let _ = writeln!(out, "    l.len = len;");
+        let _ = writeln!(
+            out,
+            "    l.items = malloc(sizeof({elem}) * (size_t)(len > 0 ? len : 1));"
+        );
+        let _ = writeln!(
+            out,
+            "    for (int64_t k = 0; k < len; k++) (({elem} *)l.items)[k] = value;"
+        );
+        let _ = writeln!(out, "    return l;");
+        let _ = writeln!(out, "}}");
+        let _ = writeln!(out, "");
+    }
+    let _ = writeln!(out, "");
+    let _ = writeln!(out, "");
     // Tuples, which `match` needs in order to compare a multi element subject.
     // A tuple of n elements is a distinct struct, so the generated C has a
     // family of them rather than one variable length array.
@@ -1553,11 +1745,23 @@ pub fn emit_program(
                 .unwrap_or_else(|| "int64_t".to_string()),
         );
     }
+    let mut bodies = String::new();
     for f in functions {
         if wanted.contains(&f.node.name) {
-            let _ = writeln!(out, "{}", emit_function(f, &signatures)?);
+            let _ = writeln!(bodies, "{}", emit_function(f, &signatures)?);
         }
     }
+
+    // A variant whose payload fields have different types is stored in a
+    // generated struct rather than a C array. Those structs are only
+    // discovered while emitting a function, so the functions go into a buffer
+    // and the declarations are written ahead of them.
+    PAYLOAD_STRUCTS.with(|d| {
+        for (name, fields) in d.borrow().iter() {
+            let _ = writeln!(out, "typedef struct {{ {fields} }} {name};");
+        }
+    });
+    let _ = writeln!(out, "{}", bodies);
 
     // The C entry point is named apart from the Vortex one, because a Vortex
     // program has its own `main` and two C functions of that name collide.

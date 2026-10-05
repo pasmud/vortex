@@ -1,0 +1,57 @@
+// A list of a named struct, and a list of a named enum.
+//
+// Stage 11's inventory found three constructs the emitter fell back to a
+// default for instead of declining, so a program could be accepted, compiled
+// and produce a wrong answer with no diagnostic at all. This example is the one
+// that would bite first: `list_element_type` named only `Int`, `Float` and
+// `Str`, so the elements of a list of a struct were read at `int64_t` and
+// every `Float` field truncated.
+//
+// `Point` has a `Float` field for that reason. An `Int` field happens to be
+// right at `int64_t` and would not have shown the defect.
+//
+// A variant whose payload fields differ in type is here too. Those are not a C
+// array, so they are carried in a generated struct with one field each. The
+// other construct from the inventory, string `+` on a value the emitter cannot
+// see is a string, is refused by name rather than emitted as C pointer
+// arithmetic; `strings.vx` does not reach it, so there is no example here that
+// does.
+
+struct Point {
+    x: Int,
+    y: Float,
+}
+
+enum Shape {
+    empty,
+    circle(Float),
+    // Two payload fields of different types, which a C array cannot hold.
+    sized { w: Float, h: Int },
+}
+
+fn area(s: Shape) -> Float {
+    return match s {
+        Shape.empty => 0.0,
+        Shape.circle(r) => 3.14159265 * r * r,
+        Shape.sized { w, h } => w * (h as Float),
+    };
+}
+
+// Stores into a list element and reads it back, so both directions of the
+// element type are exercised rather than only the read.
+fn main() -> Int {
+    var points = [Point { x: 1, y: 2.5 }; 3];
+    points[1] = Point { x: 7, y: 8.75 };
+    println(int_to_string(points[1].x));
+    println(float_to_string(points[1].y));
+    println(float_to_string(points[0].y));
+
+    var shapes = [Shape.circle(2.0); 3];
+    shapes[1] = Shape.empty;
+    shapes[2] = Shape.sized { w: 3.0, h: 4 };
+    println(float_to_string(area(shapes[0])));
+    println(float_to_string(area(shapes[1])));
+    println(float_to_string(area(shapes[2])));
+
+    return 0;
+}
