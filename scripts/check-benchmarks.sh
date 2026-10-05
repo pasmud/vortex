@@ -230,3 +230,57 @@ if [ -f "$MEAS" ] && [ -f "$TRANSCRIPT6" ]; then
     echo "MEASUREMENTS.md's figures appear in bench/results/stage6-compiled.txt."
 fi
 echo "The check is satisfied."
+
+
+# --- STAGE7.md --------------------------------------------------------------
+#
+# Stage 7 records five paths on the benchmark workload. The rule is the same as
+# for the other documents: a number quoted here has to be the number
+# bench/results/stage7-sieve.txt records.
+ST7="$ROOT/STAGE7.md"
+T7="$ROOT/bench/results/stage7-sieve.txt"
+
+if [ -f "$ST7" ] && [ -f "$T7" ]; then
+    S7FLAT=$(tr '\n' ' ' < "$ST7" | tr ',' ' ' | tr -s ' ')
+    T7FLAT=$(tr '\n' ' ' < "$T7" | tr -s ' ')
+
+    for row in "18 23 19 17 18" \
+                "23 19 20 22 23" \
+                "52 44 48 43 39" \
+                "3276 3232 3284 3262 3233" \
+                "5027 4997 5026 4993 5029"; do
+        case "$S7FLAT" in
+            *"$row"*) ;;
+            *) fail "STAGE7.md does not quote the run '$row'" ;;
+        esac
+        case "$T7FLAT" in
+            *"$row"*) ;;
+            *) fail "STAGE7.md quotes the run '$row' and bench/results/stage7-sieve.txt does not record it" ;;
+        esac
+    done
+
+    # Every path reports the sieve sum, and the document has to say so.
+    case "$S7FLAT" in
+        *"1179908154"*) ;;
+        *) fail "STAGE7.md does not record the sieve checksum" ;;
+    esac
+    case "$T7FLAT" in
+        *"1179908154"*) ;;
+        *) fail "the committed transcript does not record the sieve checksum" ;;
+    esac
+
+    # The compiled row is a sieve measurement only, and its own table row has
+    # to say so. Checking the phrase anywhere in the document was not enough,
+    # because the prose repeats it and the label could be dropped from the row
+    # while the document still passed.
+    VORROW=$(printf '%s' "$S7FLAT" | grep -o "| Vortex C |[^|]*|[^|]*|[^|]*|" | head -n 1)
+    case "$VORROW" in
+        *"sieve only"*) ;;
+        "") fail "STAGE7.md has no row for the compiled path" ;;
+        *) fail "STAGE7.md's compiled row does not say it is a sieve measurement: $VORROW" ;;
+    esac
+
+    echo "STAGE7.md's figures appear in bench/results/stage7-sieve.txt, and the"
+    echo "compiled row is labelled as a sieve measurement."
+fi
+echo "The check is satisfied."
