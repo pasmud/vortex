@@ -123,17 +123,20 @@ sentiment.
 
 ## Decision three: the memory model is linear ownership, and it is not enforced yet
 
-**Decision: keep the linear ownership model of `SPEC.md` section 7, and say
-plainly that the compiler does not enforce it today.**
+**Decision: keep the linear ownership model of `SPEC.md` section 7. Stage 6
+enforced it, so this is no longer a chosen model without a checker behind it.**
 
-What exists now: every value is owned by one binding, lists are behind a shared
-cell, and a list store mutates in place rather than copying. What does not exist:
-any check that a moved value is not used again. `SPEC.md` section 8.2 records
-this, and the honest position is that the model is chosen and not yet enforced.
+What stage 5 decided was that the model was right and that enforcement was worth
+doing later. Stage 6 did it: a use of a moved value and a second binding of an
+already-moved value are now errors naming the binding, the position and
+`SPEC.md` section 7.
 
-This is not a regression. Enforcement was never in stage 5's scope and the
-previous stages did not claim it. What stage 5 decides is that the model is
-right, so enforcement is worth doing later.
+Two forms are deliberately not moves, and both were false positives while the
+enforcement was being written: a scalar is `Copy`, so `take(n)` then `n` is
+fine, and a field read is not a move, because the struct keeps its own fields, so
+`p.x` then `p.y` is fine. Nine counterexamples are pinned in
+`crates/vortexc/tests/ownership.rs`, five of which must keep compiling, because
+rejecting a correct program is worse than accepting a wrong one.
 
 **Why linear ownership rather than a collector or a borrow checker.** A collector
 gives up deterministic destruction, which matters for the file handles and
@@ -144,13 +147,19 @@ of error whose projection is frequently not the line the programmer has to
 change. Linearity gets most of the safety with one rule to state and one rule to
 check.
 
-**Its failure modes, and how a programmer would meet them.** The main one is
+**Its failure modes, and how a programmer meets them.** The main one is
 aliasing: with one owner per value, a graph with cycles cannot be written
 directly, and a shared structure has to be an arena index or an explicit parent
-pointer. A programmer meets this as a compile error when enforcement arrives, not
-as a wrong answer, and that is the property worth having. The second is that
-deterministic deallocation means a value is dropped at the end of its scope, so
-releasing an external resource happens without the programmer writing it.
+pointer. That is now a compile error rather than a wrong answer, which is the
+property worth having. The second is that deterministic deallocation means a
+value is dropped at the end of its scope, so releasing an external resource
+happens without the programmer writing it.
+
+**What is still not enforced.** A move is recorded when an aggregate is handed to
+a call. A move by assignment is not distinguished, and a value moved out of a
+live struct field is not tracked field by field. Both are limits of what the
+lowering pass can decide syntactically today, and both are recorded rather than
+claimed.
 
 `SPEC.md` section 7.2 already frames this as Option A against Option B, keep
 linearity or add a `cell<T>` box with a narrow collector. Stage 3 already needed
@@ -188,6 +197,22 @@ adding concurrency later and having the memory model not yet enforced.
 **Falsifier:** a measured workload where the tree interpreter spends most of its
 time in one tight loop and the rest of the language is idle, such that a single
 thread leaves most of the machine unused. Threads would pay for themselves then.
+
+## Stage 6 measured the compiled path
+
+Stage 6 built the first piece of the compiler this document decided on: one
+function from `crates/vortexc/src/ir.rs` emitted as C, compiled, and run beside
+the tree interpreter and the VM. All three return the same answer, so the claim
+that a compiled path exists and agrees with the two engines is now checked rather
+than asserted.
+
+It is also faster on that function, by about 93 times against the tree
+interpreter. That figure measures what the two executors cost rather than what
+the language can do: the function is a counted loop over an `Int`, which is
+close to the best case for compiled code and close to the worst for a tree walk.
+It says nothing about allocation, strings or calls. The figures and the reasoning
+are in `MEASUREMENTS.md`, copied from a committed transcript and checked by
+`scripts/check-benchmarks.sh`.
 
 ## What was deliberately not done
 

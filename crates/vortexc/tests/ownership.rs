@@ -106,47 +106,208 @@ fn a_store_into_a_let_list_is_rejected_on_both_engines() {
     }
 }
 
-// ---------------------------------------------------------------- what it does not give yet
+// ---------------------------------------------------------------- what it now gives
 //
-// These are the properties `DECISION.md` says are unenforced. Each says what
-// the diagnostic would look like. The names say NOT rejected because that is the
-// state today: each asserts the program still compiles, so the day enforcement
-// lands these fail and have to be rewritten rather than quietly passing.
+// Stage 6 enforces the model. These replace the two tests stage 5 wrote to fail
+// the day this landed, and the diagnostics they assert are the ones
+// `SPEC.md` section 7 requires: every value has exactly one owner, passing it
+// moves it, and the moved-from binding is dead.
 
-/// A use after a move. `SPEC.md` section 7 says the moved-from binding is
-/// dead, and reading it should be an error naming the binding and the move.
+/// A use after a move of a non-scalar value.
 ///
-/// Today this program compiles and runs, which is the gap. The diagnostic
-/// stage 5 decided to leave open would be:
-///
-///     error at 2:14: `n` has been moved into the call to `take` on line 1 and
-///     cannot be used again; `SPEC.md` section 7 gives every value one owner
+/// `SPEC.md` section 7: every value has exactly one owner, and a moved-from
+/// binding is dead. The diagnostic names the binding, the rule, and a position.
 #[test]
-fn a_use_after_a_move_is_not_rejected_yet() {
-    let src = "fn take(n: Int) -> Int { return n * 2; }
-               fn main() -> Int { let n = 21; let a = take(n); return a + n; }";
-    // It runs today. That is the point of the test: it pins the gap so the day
-    // enforcement lands, this test fails and has to be rewritten.
-    assert!(
-        run(Engine::Tree, src).is_ok(),
-        "a use after a move still compiles; when enforcement arrives this \
-assertion must be replaced by one that expects the diagnostic above"
-    );
+fn a_use_after_a_move_is_rejected() {
+    let src = "struct P { x: Int, y: Int }
+               fn take(p: P) -> Int { return p.x; }
+               fn main() -> Int { let p = P { x: 1, y: 2 }; let a = take(p); return a + p.x; }";
+    for engine in ENGINES {
+        let e = rejects(engine, src);
+        let text = e.to_string();
+        assert!(
+            text.contains("`p` has been moved and cannot be used again"),
+            "{:?} should say the binding is dead, said {:?}",
+            engine,
+            text
+        );
+        assert!(
+            text.contains("section 7"),
+            "the diagnostic must cite the rule it enforces, said {:?}",
+            text
+        );
+        assert!(
+            text.contains("3:89"),
+            "the diagnostic must name a line and column, said {:?}",
+            text
+        );
+    }
 }
 
-/// A second binding for a moved value, which is how aliasing would be
-/// introduced.
+/// A second binding for an already-moved value.
 ///
-/// Today this compiles too. The diagnostic would name the second binding.
+/// The same rule reached from the other side: the value has one owner, so it
+/// cannot be bound again.
 #[test]
-fn a_second_binding_after_a_move_is_not_rejected_yet() {
+fn a_second_binding_after_a_move_is_rejected() {
+    let src = "struct P { x: Int, y: Int }
+               fn take(p: P) -> Int { return p.x; }
+               fn main() -> Int { let p = P { x: 1, y: 2 }; let a = take(p); let b = p; return a; }";
+    for engine in ENGINES {
+        let e = rejects(engine, src);
+        let text = e.to_string();
+        assert!(
+            text.contains("has been moved and cannot be used again"),
+            "{:?} should say the binding is dead, said {:?}",
+            engine,
+            text
+        );
+        assert!(
+            text.contains("section 7"),
+            "the diagnostic must cite the rule it enforces, said {:?}",
+            text
+        );
+    }
+}
+
+// ---------------------------------------------------------------- the counterexamples
+//
+// Each of these compiled before stage 6. They are the cases where enforcing
+// moves wrongly would reject a program that should compile, so each is pinned.
+
+/// A scalar survives a move, because `SPEC.md` section 7 says scalars are
+/// `Copy` and are duplicated rather than moved. Rejecting this would break
+/// almost every program.
+#[test]
+fn a_scalar_is_copied_rather_than_moved() {
     let src = "fn take(n: Int) -> Int { return n * 2; }
-               fn main() -> Int { let n = 21; let a = take(n); let b = n; return a + b; }";
-    assert!(
-        run(Engine::Tree, src).is_ok(),
-        "a second binding after a move still compiles; when enforcement \
-arrives this assertion must be replaced by one that expects the diagnostic"
-    );
+               fn main() -> Int { let n = 21; let a = take(n); return a + n; }";
+    for engine in ENGINES {
+        let mut out = Vec::new();
+        let result = match engine {
+            Engine::Tree => run_source(src, &mut out),
+            Engine::Vm => run_on_vm(src, &mut out),
+        };
+        assert_eq!(
+            vortexc::interp::display(&result.unwrap()),
+            "63",
+            "{:?} should compile",
+            engine
+        );
+    }
+}
+
+/// A scalar moved twice is still fine, for the same reason.
+#[test]
+fn a_scalar_may_be_moved_twice() {
+    let src = "fn take(n: Int) -> Int { return n * 2; }
+               fn main() -> Int { let n = 21; let a = take(n); let b = take(n); return a + b; }";
+    for engine in ENGINES {
+        let mut out = Vec::new();
+        let result = match engine {
+            Engine::Tree => run_source(src, &mut out),
+            Engine::Vm => run_on_vm(src, &mut out),
+        };
+        assert_eq!(
+            vortexc::interp::display(&result.unwrap()),
+            "84",
+            "{:?} should compile",
+            engine
+        );
+    }
+}
+
+/// A value moved inside a loop body is rejected at the second move, which is
+/// where it becomes dead.
+#[test]
+fn a_move_inside_a_loop_is_rejected() {
+    let src = "struct P { x: Int, y: Int }
+               fn take(p: P) -> Int { return p.x; }
+               fn main() -> Int {
+                   var p = P { x: 1, y: 2 };
+                   var i = 0;
+                   while i < 2 {
+                       let a = take(p);
+                       let b = take(p);
+                       i = i + 1;
+                   }
+                   return 0;
+               }";
+    for engine in ENGINES {
+        let e = rejects(engine, src);
+        assert!(
+            e.to_string().contains("has been moved"),
+            "{:?} should reject the second move, said {:?}",
+            engine,
+            e.to_string()
+        );
+    }
+}
+
+/// A move inside a match arm that binds by value is allowed, because the bound
+/// name holds a scalar. Pinned so the day that changes it is deliberate.
+#[test]
+fn a_move_inside_a_match_arm_is_allowed_for_a_scalar_binding() {
+    let src = "enum S { one(Int), two }
+               fn take(n: Int) -> Int { return n * 2; }
+               fn f(s: S) -> Int {
+                   let a = match s {
+                       S.one(v) => take(v) + v,
+                       S.two => 0,
+                   };
+                   return a;
+               }
+               fn main() -> Int { return 0; }";
+    for engine in ENGINES {
+        assert!(
+            run(engine, src).is_ok(),
+            "{:?} should compile, because a bound Int is a scalar",
+            engine
+        );
+    }
+}
+
+/// A struct field read does not move the struct, so reading two fields in
+/// sequence is fine. This was a real false positive during stage 6.
+#[test]
+fn reading_two_fields_of_one_struct_is_allowed() {
+    let src = "struct P { x: Int, y: Int }
+               fn main() -> Int { let p = P { x: 1, y: 2 }; return p.x + p.y; }";
+    for engine in ENGINES {
+        let mut out = Vec::new();
+        let result = match engine {
+            Engine::Tree => run_source(src, &mut out),
+            Engine::Vm => run_on_vm(src, &mut out),
+        };
+        assert_eq!(
+            vortexc::interp::display(&result.unwrap()),
+            "3",
+            "{:?} should compile",
+            engine
+        );
+    }
+}
+
+/// Moving a struct into a function and not using it again is the ordinary case
+/// the model has to allow.
+#[test]
+fn moving_an_aggregate_and_not_using_it_again_is_allowed() {
+    let src = "struct P { x: Int, y: Int }
+               fn take(p: P) -> Int { return p.x; }
+               fn main() -> Int { let p = P { x: 7, y: 8 }; return take(p); }";
+    for engine in ENGINES {
+        let mut out = Vec::new();
+        let result = match engine {
+            Engine::Tree => run_source(src, &mut out),
+            Engine::Vm => run_on_vm(src, &mut out),
+        };
+        assert_eq!(
+            vortexc::interp::display(&result.unwrap()),
+            "7",
+            "{:?} should compile",
+            engine
+        );
+    }
 }
 
 // ---------------------------------------------------------------- helpers

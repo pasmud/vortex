@@ -50,45 +50,56 @@ Merged in pull request #8. Twelve loop defects found by running both engines
 against each other, the VM measured slower than the tree interpreter, and
 `SPEC.md` section 10.1 resolved.
 
-## Stage 5, active: backend and memory model decided from measurement
+## Stage 5, complete: backend and memory model decided from measurement
 
-Scope: decide the backend and the memory model from stage 4's evidence, then
-build the smallest thing that proves the decision.
+Merged in pull request #10. The backend is an ahead-of-time compiler over
+`crates/vortexc/src/ir.rs`, both named VM changes measured and reverted, linear
+ownership kept, no concurrency.
+
+## Stage 6, active: enforce linear ownership, then compile one real function
+
+Scope: make the memory model a property rather than a document, then build the
+first piece of the compiler stage 5 decided on.
 
 Acceptance criteria:
 
-- [x] The decision is written down with the evidence behind it and a falsifier.
-      `DECISION.md`, written before any code.
-- [x] Each of the two VM changes stage 4 named is measured with before and after
-      numbers. **Both reverted.** A frame allocated operand stack was worse at
-      every size tried, 5419 ms at 256 slots and 5283 ms at 32, against 4939 ms.
-      Boxing the string payload was inside the jitter across three rounds of
-      five runs and did not shrink `Value`.
-- [x] The memory and concurrency model is decided, with failure modes stated.
-      Linear ownership kept and not enforced yet; no concurrency in v0.1.
-- [x] One example program exercises the decided model, runs, and is measured.
-      `examples/ownership.vx`, identical on both engines.
-- [x] The example set still runs on both engines with identical output.
-- [x] No invented or estimated number anywhere.
-- [ ] The native compiler itself. **Deliberately out of scope.** The decision
-      names it and the reasoning is recorded, but writing a code generator was
-      not this stage, and no performance claim about one is made because none
-      has been measured.
+- [x] The two tests stage 5 pinned to fail on enforcement land now fail, and are
+      replaced by tests asserting the diagnostics.
+- [x] Every ownership counterexample produces a diagnostic naming the rule.
+- [x] A program that should compile still compiles. Nine counterexamples are
+      pinned, five of which must keep compiling.
+- [x] One function is compiled and runs, and its output is byte-identical
+      across the compiled path, the tree interpreter and the VM, at four inputs.
+- [x] Every number is copied from a committed transcript, and
+      `scripts/check-benchmarks.sh` covers `MEASUREMENTS.md`.
+- [x] `SPEC.md` and `DECISION.md` updated on the day enforcement landed.
+- [x] `cargo test --workspace` passes with lexer, parser, interpreter, checker,
+      ownership and compiled counts separated. 205 passing on both engines.
 
-### What stage 5 concluded
+### What stage 6 found
 
-The backend is an ahead-of-time compiler over `crates/vortexc/src/ir.rs`, not
-the bytecode VM. The premise behind building a VM, that per node dispatch was
-the cost, turned out to be wrong: a Rust tree walk recurses and the optimiser
-inlines it, while a VM pays for an instruction walk and an operand stack that
-the tree walk never had. The VM is kept as a test oracle, because two
-independent readings of the semantics found twelve defects that one reading did
-not.
+Enforcing moves wrongly is worse than not enforcing them, so the counterexamples
+were written before the enforcement. Three turned up defects in the enforcement
+rather than in the examples: a struct field read was treated as a move of the
+base, which broke `examples/structs.vx`; a move inside a loop body was
+forgotten, because a block discarded the flag; and a move was recorded only in
+the innermost scope, so a binding declared in the function body was invisible
+from inside a loop.
 
-### What stage 6 should do
+The measurement found a fourth. The compiled path returned 307880128 where both
+engines returned 2666668666667000000, because the C entry point cast through
+`int`, which is 32 bits here. A compiled path checked only against itself would
+have shipped it.
 
-The next piece of work is enforcement of the move model in section 7. The model
-is chosen and demonstrated, and the gap is pinned by two tests that will fail
-when enforcement lands. After that, the compiler itself, which consumes the
-lowered form the tree interpreter already walks.
+### What stage 7 should do
+
+The emitter handles scalar functions with loops and refuses a list, an `if`
+expression and a `match`. Until it handles those it cannot carry the benchmark
+workload, so no Vortex row for the full workload exists and none is claimed.
+Extending the emitter to lists, conditionals and matches is the next piece, and
+with it a compiled row in the benchmark table.
+
+Move enforcement is also partial. A move by assignment and a move out of a
+live struct field are not tracked. Both are limits of what the lowering pass
+decides syntactically today.
 
