@@ -44,90 +44,51 @@ Merged in pull request #6. Every rule in `SPEC.md` section 6 is enforced or
 recorded as unimplemented in `crates/vortexc/DIAGNOSTICS.md`, and the two
 `SPEC.md` section 8.2 gaps are closed.
 
-## Stage 4, active: bytecode VM and measured optimisation
+## Stage 4, complete: bytecode VM and measured optimisation
 
-Scope: compile the lowered form to bytecode, execute it on a VM, and measure it
-against the tree interpreter on the same workload.
+Merged in pull request #8. Twelve loop defects found by running both engines
+against each other, the VM measured slower than the tree interpreter, and
+`SPEC.md` section 10.1 resolved.
 
-Acceptance criteria:
+## Stage 5, active: backend and memory model decided from measurement
 
-- [x] The whole `examples/` set parses and runs on both engines, with identical
-      output. Checked by comparing the two engines on every example, not by
-      asserting one of them.
-- [x] The stage 2 and 3 test suites run against the VM unchanged, selected by
-      `VORTEX_ENGINE=vm cargo test --workspace`. 189 passing on each engine. No
-      expectation was edited to accommodate the VM, and the second run was shown
-      to really exercise the VM by breaking VM arithmetic and watching 15 tests
-      fail while the tree suite still passed.
-- [x] A disassembly command prints the bytecode for a function:
-      `cargo run --release --example disasm -- <file.vx> [--fn <name>]`.
-- [x] `bench/run.sh` reports a tree interpreter row and a VM row for the same
-      workload, five repeats, raw output committed at
-      `bench/results/stage4-vm.txt`. Both rows print the same checksum as the C
-      and Rust baselines.
-- [x] `SPEC.md` section 10.1 resolved in writing, with the measurement that
-      decided it.
-- [x] Every optimisation is either published with before and after numbers or
-      was never made. **No optimisation shipped.** The measurement that would
-      have justified one, a VM faster than the tree interpreter, did not happen,
-      so the honest result is the slowdown recorded in `BENCHMARKS.md`.
-
-## Stage 3: types and diagnostics
-
-Scope: static checking, and a regression test per diagnostic the spec promises.
+Scope: decide the backend and the memory model from stage 4's evidence, then
+build the smallest thing that proves the decision.
 
 Acceptance criteria:
 
-- [ ] Every nominal, structural, Option, Result, cast and shadowing rule in
-      `SPEC.md` section 6 is enforced or explicitly recorded as unimplemented.
-- [ ] Every diagnostic has a regression test that asserts the message and the
-      line and column.
-- [ ] A documented list of every diagnostic the checker can emit, with the
-      `SPEC.md` rule each one enforces.
-- [ ] Type checking runs before execution, so an ill typed program never
-      reaches the interpreter.
-- [ ] `cargo test --workspace` passes.
+- [x] The decision is written down with the evidence behind it and a falsifier.
+      `DECISION.md`, written before any code.
+- [x] Each of the two VM changes stage 4 named is measured with before and after
+      numbers. **Both reverted.** A frame allocated operand stack was worse at
+      every size tried, 5419 ms at 256 slots and 5283 ms at 32, against 4939 ms.
+      Boxing the string payload was inside the jitter across three rounds of
+      five runs and did not shrink `Value`.
+- [x] The memory and concurrency model is decided, with failure modes stated.
+      Linear ownership kept and not enforced yet; no concurrency in v0.1.
+- [x] One example program exercises the decided model, runs, and is measured.
+      `examples/ownership.vx`, identical on both engines.
+- [x] The example set still runs on both engines with identical output.
+- [x] No invented or estimated number anywhere.
+- [ ] The native compiler itself. **Deliberately out of scope.** The decision
+      names it and the reasoning is recorded, but writing a code generator was
+      not this stage, and no performance claim about one is made because none
+      has been measured.
 
-## Stage 4: bytecode VM and measured optimisation
+### What stage 5 concluded
 
-Scope: compile the AST to bytecode, add a VM, and measure against the tree
-interpreter.
+The backend is an ahead-of-time compiler over `crates/vortexc/src/ir.rs`, not
+the bytecode VM. The premise behind building a VM, that per node dispatch was
+the cost, turned out to be wrong: a Rust tree walk recurses and the optimiser
+inlines it, while a VM pays for an instruction walk and an operand stack that
+the tree walk never had. The VM is kept as a test oracle, because two
+independent readings of the semantics found twelve defects that one reading did
+not.
 
-Acceptance criteria:
+### What stage 6 should do
 
-- [ ] The same `examples/` tests pass unchanged against the VM, so the VM is
-      checked against the tree interpreter rather than against new expectations.
-- [ ] A disassembly command prints the bytecode for a function.
-- [ ] `bench/run.sh` reports tree interpreter and VM rows for the same
-      algorithm, on a machine recorded in `BENCHMARKS.md`, with raw output
-      committed.
-- [ ] Every optimisation in this stage is listed with the measurement that
-      justified it, and the result of the full benchmark run before and after.
-      An optimisation with no before and after measurement is reverted.
-- [ ] `SPEC.md` section 10.1 is resolved either way, in writing, before the
-      stage closes.
+The next piece of work is enforcement of the move model in section 7. The model
+is chosen and demonstrated, and the gap is pinned by two tests that will fail
+when enforcement lands. After that, the compiler itself, which consumes the
+lowered form the tree interpreter already walks.
 
-## Stage 5: native backend, memory and concurrency model
-
-Scope: decide a native backend and a memory and concurrency model from the
-stage 4 measurements.
-
-Acceptance criteria, all of which are decisions backed by data:
-
-- [ ] The `cell<T>` and cycle breaking question in `SPEC.md` section 7.2 is
-      decided by the stated rule, and the spec is updated with the decision and
-      the measurements.
-- [ ] The concurrency model is chosen from stage 4 measurements, and the spec
-      documents what is shared and how ownership is transferred.
-- [ ] A concurrency model is only claimed to be safe if a tested model exists.
-      A claim without a test is not accepted.
-- [ ] The native backend is compared against the VM on the committed harness,
-      and the result is recorded in `BENCHMARKS.md` with the machine
-      specification.
-- [ ] `cargo test --workspace` passes.
-
-## Later, not scheduled
-
-- Packages and a foreign function interface. Not committed.
-- Trait objects. Deferred past v0.1.
-- Editors, a formatter and a language server. Not committed.
