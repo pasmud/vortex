@@ -269,138 +269,120 @@ pub enum ExprKind {
 /// is the failure mode this is here to prevent. The count comes from
 /// `ExprKind::name`, which is an exhaustive match, so adding a variant fails the
 /// build there and changes this number at the same time.
-pub fn expr_kind_names() -> Vec<&'static str> {
-    // Each form is named by an exhaustive match, so adding a variant to
-    // `ExprKind` fails the build at the match and its name lands in this list
-    // without anyone editing it. That is what lets a check against the list
-    // catch an unhandled form: a hand-written list of today's forms passed with
-    // an extra variant in the enum, which is the failure mode this prevents.
-    let forms = [
-        ExprKind::Int(0),
-        ExprKind::Float(0.0),
-        ExprKind::Str(String::new()),
-        ExprKind::Char(' '),
-        ExprKind::Bool(false),
-        ExprKind::Ident(String::new()),
-        ExprKind::Call {
-            callee: String::new(),
+pub fn expr_kind_examples() -> Vec<Expr> {
+    let form = |kind: ExprKind| Expr {
+        pos: crate::span::Pos { line: 1, col: 1 },
+        kind,
+    };
+    let at = |line: u32| Expr {
+        pos: crate::span::Pos { line, col: 1 },
+        kind: ExprKind::Int(0),
+    };
+    // The array is the single declaration every form is listed in. `name`
+    // above is exhaustive, so the compiler requires an arm per variant and a new
+    // one is a compile error. This array supplies a value of each, and its length
+    // is read from itself rather than copied into a constant, so the two cannot
+    // drift the way a hand-written count and a hand-written array did.
+    let forms = vec![
+        form(ExprKind::Int(0)),
+        form(ExprKind::Float(0.0)),
+        form(ExprKind::Str(String::new())),
+        form(ExprKind::Char(' ')),
+        form(ExprKind::Bool(false)),
+        form(ExprKind::Ident(String::new())),
+        form(ExprKind::Call {
+            callee: "f".to_string(),
             args: Vec::new(),
-        },
-        ExprKind::Neg(Box::new(Expr {
-            pos: crate::span::Pos { line: 1, col: 1 },
-            kind: ExprKind::Int(0),
-        })),
-        ExprKind::Not(Box::new(Expr {
-            pos: crate::span::Pos { line: 1, col: 1 },
-            kind: ExprKind::Bool(false),
-        })),
-        ExprKind::Assign {
+        }),
+        form(ExprKind::Neg(Box::new(at(1)))),
+        form(ExprKind::Not(Box::new(form(ExprKind::Bool(false))))),
+        form(ExprKind::Assign {
             name: String::new(),
             index: None,
-            value: Box::new(Expr {
-                pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Int(0),
-            }),
-        },
-        ExprKind::Binary {
+            value: Box::new(at(1)),
+        }),
+        form(ExprKind::Binary {
             op: BinOp::Add,
-            lhs: Box::new(Expr {
-                pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Int(0),
-            }),
-            rhs: Box::new(Expr {
-                pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Int(0),
-            }),
-        },
-        ExprKind::If {
-            cond: Box::new(Expr {
-                pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Bool(false),
-            }),
+            lhs: Box::new(at(1)),
+            rhs: Box::new(at(1)),
+        }),
+        form(ExprKind::If {
+            cond: Box::new(form(ExprKind::Bool(false))),
             then: Block {
                 pos: crate::span::Pos { line: 1, col: 1 },
                 stmts: Vec::new(),
-                tail: None,
+                tail: Some(Box::new(form(ExprKind::Int(0)))),
             },
             otherwise: None,
-        },
-        ExprKind::Match {
-            scrutinee: Box::new(Expr {
+        }),
+        form(ExprKind::Match {
+            scrutinee: Box::new(at(1)),
+            arms: vec![Arm {
                 pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Int(0),
-            }),
-            arms: Vec::new(),
-        },
-        ExprKind::Record {
+                patterns: Vec::new(),
+                body: form(ExprKind::Int(0)),
+            }],
+        }),
+        form(ExprKind::Record {
             ty: String::new(),
             fields: Vec::new(),
-        },
-        ExprKind::Variant {
+        }),
+        form(ExprKind::Variant {
             ty: String::new(),
             variant: String::new(),
-        },
-        ExprKind::VariantCall {
+        }),
+        form(ExprKind::VariantCall {
             ty: String::new(),
             variant: String::new(),
             args: Vec::new(),
-        },
-        ExprKind::VariantRecord {
+        }),
+        form(ExprKind::VariantRecord {
             ty: String::new(),
             variant: String::new(),
             fields: Vec::new(),
-        },
-        ExprKind::Tuple(Vec::new()),
-        ExprKind::Paren(Box::new(Expr {
-            pos: crate::span::Pos { line: 1, col: 1 },
-            kind: ExprKind::Int(0),
-        })),
-        ExprKind::Block(Block {
+        }),
+        form(ExprKind::Tuple(vec![
+            form(ExprKind::Int(0)),
+            form(ExprKind::Int(0)),
+        ])),
+        form(ExprKind::Paren(Box::new(at(1)))),
+        form(ExprKind::Block(Block {
             pos: crate::span::Pos { line: 1, col: 1 },
             stmts: Vec::new(),
             tail: None,
-        }),
-        ExprKind::Try(Box::new(Expr {
-            pos: crate::span::Pos { line: 1, col: 1 },
-            kind: ExprKind::Int(0),
         })),
-        ExprKind::Array(Vec::new()),
-        ExprKind::Cast(
-            Box::new(Expr {
-                pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Int(0),
-            }),
-            TypeExpr::Named(String::new()),
-        ),
-        ExprKind::Repeat {
-            value: Box::new(Expr {
-                pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Int(0),
-            }),
-            count: Box::new(Expr {
-                pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Int(0),
-            }),
-        },
-        ExprKind::Index(
-            Box::new(Expr {
-                pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Int(0),
-            }),
-            Box::new(Expr {
-                pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Int(0),
-            }),
-        ),
-        ExprKind::Field(
-            Box::new(Expr {
-                pos: crate::span::Pos { line: 1, col: 1 },
-                kind: ExprKind::Int(0),
-            }),
-            String::new(),
-        ),
+        form(ExprKind::Try(Box::new(at(1)))),
+        form(ExprKind::Array(Vec::new())),
+        form(ExprKind::Cast(
+            Box::new(at(1)),
+            TypeExpr::Named("Int".to_string()),
+        )),
+        form(ExprKind::Repeat {
+            value: Box::new(at(1)),
+            count: Box::new(at(1)),
+        }),
+        form(ExprKind::Index(Box::new(at(1)), Box::new(at(1)))),
+        form(ExprKind::Field(Box::new(at(1)), String::new())),
     ];
-    forms.iter().map(|k| k.name()).collect()
+    forms
+}
+
+/// The number of variants `ExprKind` has, read from the inventory.
+///
+/// It exists only to be compared: a caller that wants to know how many forms
+/// there are reads `expr_kind_examples().len()` and gets a number that is in
+/// step with the array, not one copied and left to drift.
+pub fn expr_kind_variant_count() -> usize {
+    expr_kind_examples().len()
+}
+
+/// The name of every expression form, read from the single declaration above.
+///
+/// A form cannot be absent from this without being absent from the array, which
+/// is exhaustive, so a variant added to the type is a name added here with no
+/// separate edit.
+pub fn expr_kind_names() -> Vec<&'static str> {
+    expr_kind_examples().iter().map(|e| e.kind.name()).collect()
 }
 
 /// The name of an expression form, used to report one.

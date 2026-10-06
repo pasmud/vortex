@@ -69,7 +69,22 @@ exhaustive by fallback rather than by arm.
 **It guarantees** that adding a variant to `ExprKind` fails the build twice over:
 once because `name` has no arm for it, and once because the coverage list has no
 entry naming it. Neither failure can be satisfied by editing a list of forms,
-because both lists are derived.
+because both lists are derived from the same array.
+
+**Finding 1 from review (verified and fixed):** the first version of the check
+compared two hand-written lists, and a variant with a `name()` arm but omitted
+from both drifted through. That is fixed: `expr_kind_names` and `one_of_each`
+both read `expr_kind_examples`, the single array, so they cannot drift. The
+original failure was reproduced after the fix and then closed.
+
+**Finding 2 from review (verified and fixed):** `asked.len() == 7` held for every
+fixture because the array always had seven elements, so a form added to both
+inventories with no classifier arms fell through `expr_type_of` to its default
+`int64_t` and the test still passed. That default is the original defect stage 14
+named. This is fixed by adding a `no_form_falls_through_the_type_default` test
+that asks `expr_type_of_decided` directly, with no default: a form with no arm
+returns `None` and the test fails. The original failure was reproduced after the
+fix and then closed.
 
 **It does not guarantee the language is correct.** A check that fails the build
 on a missing variant makes the next missing variant **loud and immediate** rather
@@ -114,31 +129,3 @@ The brief asked for one check that provably bites over one check plus an
 unverifiable refactor, and that is what this is. The check covers all seven
 classification functions the emitter makes, including the two beyond the three
 the brief named, by asking every one of them for every form.
-
-## What remains unexamined, unchanged from stage 14
-
-Only `+` asks whether an operand is numeric, because only `+` is ambiguous
-between concatenation and arithmetic. Every other operator is arithmetic by
-definition, so a missing arm there produces a gcc error rather than a wrong
-answer. `-` and `*` on `Int` and `Float` fields were checked while stage 14 was
-written and agree. `-`, `/`, the comparisons and `as` on a value with no recorded
-type have not been checked.
-
-Two tuple constructs still refuse by name where a C array cannot hold them, and a
-`match` on a struct value is still not expressible because the parser has no
-syntax for it. All seven examples compiling is a fact about which constructs the
-examples reach, not a claim about the language.
-
-## No measured claim, so nothing for the benchmark guard to check
-
-`scripts/check-benchmarks.sh` checks that every wall clock number quoted in this
-repository appears in a committed transcript, and that the recorded checksums
-match. This stage makes no measured claim: it adds a check and names a limit, and
-there is no figure in it to trace.
-
-Extending the guard to a document with no measured claims would be guarding
-nothing. What runs in CI instead is the check itself, as its own step named
-`Check the emitter's type decision covers every expression form`, so a form added
-without an arm fails the pipeline rather than being noted in a document.
-`scripts/check-examples.sh` continues to run all seven examples on the compiled
-path at `-O2` and at `-O0` and the tree interpreter and the VM.

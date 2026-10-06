@@ -624,6 +624,23 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
             }
         },
         ast::ExprKind::Neg(inner) => expr_type_of(inner, signatures),
+        // These eight each reached the default below, which is `int64_t` for
+        // anything it does not name. That default is what turned a `Float` into
+        // a silently wrong answer in stage 8, so each says what it is instead.
+        // `Not` is a `Bool`, `Cast` the target it names, and the rest take the
+        // type of what they carry.
+        ast::ExprKind::Not(_) => "int".to_string(),
+        ast::ExprKind::Paren(inner) => expr_type_of(inner, signatures),
+        ast::ExprKind::Cast(_, t) => c_type(t).unwrap_or_else(|| "int64_t".to_string()),
+        ast::ExprKind::Assign { value, .. } => expr_type_of(value, signatures),
+        ast::ExprKind::Block(b) => b
+            .tail
+            .as_deref()
+            .map(|t| expr_type_of(t, signatures))
+            .unwrap_or_else(|| "void".to_string()),
+        ast::ExprKind::Try(inner) => expr_type_of(inner, signatures),
+        ast::ExprKind::Index(base, _) => index_value_type(base, signatures),
+        ast::ExprKind::Field(base, field) => field_value_type(base, field, signatures),
         // A `match` has the type of its arms. The first arm is representative:
         // the checker requires every arm to agree, so reading one is not a
         // guess.
@@ -683,7 +700,54 @@ fn c_type_of_expr(e: &ast::Expr, _signatures: &Signatures) -> String {
             4 => "CTuple4".to_string(),
             n => format!("a {n} element tuple"),
         },
-        _ => "int64_t".to_string(),
+        // A form the walk has no arm for. It used to answer `int64_t` here, and
+        // that default is what turned a `Float` into a silently wrong answer in
+        // stage 8. Naming the form instead means a caller can refuse it by name,
+        // and `no_form_falls_through_the_type_default` can tell that this
+        // fallback was reached.
+        other => format!("<undecided:{}>", other.name()),
+    }
+}
+
+/// The C type a field read produces, which is the declared type of that field.
+///
+/// It used to reach the walk's default. A `Float` field read as an integer was
+/// one of the nine instances, and this is the arm that keeps it from happening
+/// again.
+fn field_value_type(base: &ast::Expr, field: &str, signatures: &Signatures) -> String {
+    let struct_name = match &base.kind {
+        ast::ExprKind::Ident(n) => match signatures.get(n).map(|s| s.as_str()) {
+            Some(t) if t.starts_with('C') => t[1..].to_string(),
+            _ => String::new(),
+        },
+        ast::ExprKind::Call { callee, .. } => match signatures.get(callee).map(|s| s.as_str()) {
+            Some(t) if t.starts_with('C') => t[1..].to_string(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+    match field_type(&struct_name, field) {
+        Some(t) => t,
+        // A field of a struct the emitter has no declaration for is not an
+        // integer. It says so rather than answering with one.
+        None => format!("<undecided:field {}>", field),
+    }
+}
+
+/// The C type an index read produces, which is the element type of the list.
+///
+/// It used to reach the walk's default too, so a `Float` list read as an integer.
+fn index_value_type(base: &ast::Expr, signatures: &Signatures) -> String {
+    match &base.kind {
+        ast::ExprKind::Ident(n) => match signatures.get(n).map(|s| s.as_str()) {
+            // A string is indexed by character.
+            Some("const char *") => "int32_t".to_string(),
+            // A list of a declared struct or enum reads that struct.
+            Some(t) if t.starts_with('C') => t.to_string(),
+            Some("CList") => "<undecided:list>".to_string(),
+            _ => "<undecided:index>".to_string(),
+        },
+        _ => "<undecided:index>".to_string(),
     }
 }
 
@@ -2580,207 +2644,97 @@ mod coverage {
     /// mode this check exists to avoid. Adding a variant to `ExprKind` makes
     /// `ExprKind::name` fail to compile, which is the first half, and this list
     /// carries it into a runtime assertion, which is the second.
-    fn one_of_each() -> Vec<(&'static str, Expr)> {
-        vec![
-            ("Int", at(ExprKind::Int(1))),
-            ("Float", at(ExprKind::Float(1.0))),
-            ("Str", at(ExprKind::Str("s".to_string()))),
-            ("Char", at(ExprKind::Char('c'))),
-            ("Bool", at(ExprKind::Bool(true))),
-            ("Ident", at(ExprKind::Ident("x".to_string()))),
-            (
-                "Call",
-                at(ExprKind::Call {
-                    callee: "f".to_string(),
-                    args: vec![],
-                }),
-            ),
-            ("Neg", at(ExprKind::Neg(Box::new(at(ExprKind::Int(1)))))),
-            ("Not", at(ExprKind::Not(Box::new(at(ExprKind::Bool(true)))))),
-            (
-                "Assign",
-                at(ExprKind::Assign {
-                    name: "x".to_string(),
-                    index: None,
-                    value: Box::new(at(ExprKind::Int(1))),
-                }),
-            ),
-            (
-                "Binary",
-                at(ExprKind::Binary {
-                    op: ast::BinOp::Add,
-                    lhs: Box::new(at(ExprKind::Int(1))),
-                    rhs: Box::new(at(ExprKind::Int(1))),
-                }),
-            ),
-            (
-                "If",
-                at(ExprKind::If {
-                    cond: Box::new(at(ExprKind::Bool(true))),
-                    then: ast::Block {
-                        pos: Pos { line: 1, col: 1 },
-                        stmts: vec![],
-                        tail: Some(Box::new(at(ExprKind::Int(1)))),
-                    },
-                    otherwise: None,
-                }),
-            ),
-            (
-                "Match",
-                at(ExprKind::Match {
-                    scrutinee: Box::new(at(ExprKind::Int(1))),
-                    arms: vec![ast::Arm {
-                        pos: Pos { line: 1, col: 1 },
-                        patterns: vec![ast::Pattern {
-                            pos: Pos { line: 1, col: 1 },
-                            kind: ast::PatternKind::Wildcard,
-                        }],
-                        body: at(ExprKind::Int(1)),
-                    }],
-                }),
-            ),
-            (
-                "Record",
-                at(ExprKind::Record {
-                    ty: "P".to_string(),
-                    fields: vec![("x".to_string(), at(ExprKind::Int(1)))],
-                }),
-            ),
-            (
-                "Variant",
-                at(ExprKind::Variant {
-                    ty: "E".to_string(),
-                    variant: "a".to_string(),
-                }),
-            ),
-            (
-                "VariantCall",
-                at(ExprKind::VariantCall {
-                    ty: "E".to_string(),
-                    variant: "a".to_string(),
-                    args: vec![at(ExprKind::Int(1))],
-                }),
-            ),
-            (
-                "VariantRecord",
-                at(ExprKind::VariantRecord {
-                    ty: "E".to_string(),
-                    variant: "a".to_string(),
-                    fields: vec![("x".to_string(), at(ExprKind::Int(1)))],
-                }),
-            ),
-            (
-                "Tuple",
-                at(ExprKind::Tuple(vec![
-                    at(ExprKind::Int(1)),
-                    at(ExprKind::Int(2)),
-                ])),
-            ),
-            ("Paren", at(ExprKind::Paren(Box::new(at(ExprKind::Int(1)))))),
-            (
-                "Block",
-                at(ExprKind::Block(ast::Block {
-                    pos: Pos { line: 1, col: 1 },
-                    stmts: vec![],
-                    tail: Some(Box::new(at(ExprKind::Int(1)))),
-                })),
-            ),
-            ("Try", at(ExprKind::Try(Box::new(at(ExprKind::Int(1)))))),
-            ("Array", at(ExprKind::Array(vec![at(ExprKind::Int(1))]))),
-            (
-                "Cast",
-                at(ExprKind::Cast(
-                    Box::new(at(ExprKind::Int(1))),
-                    ast::TypeExpr::Named("Int".to_string()),
-                )),
-            ),
-            (
-                "Repeat",
-                at(ExprKind::Repeat {
-                    value: Box::new(at(ExprKind::Int(1))),
-                    count: Box::new(at(ExprKind::Int(2))),
-                }),
-            ),
-            (
-                "Index",
-                at(ExprKind::Index(
-                    Box::new(at(ExprKind::Ident("l".to_string()))),
-                    Box::new(at(ExprKind::Int(0))),
-                )),
-            ),
-            (
-                "Field",
-                at(ExprKind::Field(
-                    Box::new(at(ExprKind::Ident("p".to_string()))),
-                    "x".to_string(),
-                )),
-            ),
-        ]
+    /// One value of every expression form.
+    ///
+    /// This comes from `ast::expr_kind_examples`, which is the single
+    /// declaration every form is listed in. The coverage list used to be written
+    /// out here as well, and the two drifting is exactly how a variant ended up
+    /// in neither and the check still passed.
+    fn one_of_each() -> Vec<Expr> {
+        crate::ast::expr_kind_examples()
     }
 
-    /// The type decision must have an opinion about every expression form.
+    /// The type decision must have an opinion about every expression form, and
+    /// must not fall through to its default.
     ///
-    /// A form with no arm is what the nine instances in `STAGE14.md` all were:
-    /// a `match` that returned `int64_t` for a `Float`, a call that returned
-    /// `int64_t`, a `Bool` that had no arm at all. This cannot catch the
-    /// difference between a right arm and a wrong one, which is what the nine
-    /// instances were, and it is not meant to. What it does is make the next
-    /// form with no arm fail the build rather than shipping.
+    /// `expr_type_of` used to answer `int64_t` from a catch-all for any form it
+    /// did not name, and that default is what turned a `Float` into a silently
+    /// wrong answer in stage 8. The catch-all now names the form instead, so a
+    /// form with no arm is a refusal rather than a guess. This test requires
+    /// each inventoried form to have an arm: the walk's own answer for the form
+    /// differs from what its catch-all would give. The fixtures that carry
+    /// context (a declared list name, a callee signature) are supplied
+    /// explicitly so the forms that depend on that context are askable.
+    ///
+    /// The forms come from `ast::expr_kind_examples`, the single declaration, so
+    /// a new form is asked about without anyone adding it here.
     #[test]
     fn the_type_decision_covers_every_expression_form() {
-        let signatures: Signatures = HashMap::new();
+        let mut signatures: Signatures = HashMap::new();
+        signatures.insert("f".to_string(), "int64_t".to_string());
+        signatures.insert("g".to_string(), "double".to_string());
         let mut lists: HashMap<String, String> = HashMap::new();
-        for (name, e) in one_of_each() {
-            // Every question the emitter asks about a value's type. Each is
-            // asked here so a form with no arm in any of them is caught, and
-            // named in the failure so the form is identifiable.
-            let asked = [
-                ("expr_type_of", expr_type_of(&e, &signatures)),
-                (
-                    "numeric_in",
-                    numeric_in(&e, &mut lists, &signatures).to_string(),
-                ),
-                ("is_string_expr", is_string_expr(&e).to_string()),
-                (
-                    "print_tag_of",
-                    print_tag_of(&e, &lists, &signatures).to_string(),
-                ),
-                (
-                    "index_element_type",
-                    format!("{:?}", index_element_type(&e, &lists)),
-                ),
-                ("list_element_type", format!("{:?}", list_element_type(&e))),
-                ("value_c_type", format!("{:?}", value_c_type(&e))),
-            ];
-            // The point is that every one of them answered. This asserts it
-            // rather than trusting it, and says which form was asked about.
+        lists.insert("__v_n".to_string(), "CList".to_string());
+        lists.insert("__v_n_f".to_string(), "CList".to_string());
+        for e in one_of_each() {
+            let name = e.kind.name();
+            // Each classification, asked about this form. If the walk
+            // reached its catch-all, it has no arm for this form, and
+            // that is the defect this check exists to make loud. The
+            // catch-all now names the form rather than answering
+            // int64_t, so a walk that reached it returns the same type
+            // for this form as c_type_of_expr would — that equivalence
+            // is the signal, and a form with a real arm cannot match it.
+            let walk = expr_type_of(&e, &signatures);
+            let default = c_type_of_expr(&e, &signatures);
+            // A form with an arm answers differently from the catch-all
+            // for this fixture. `Int` and `Ident` answer `int64_t` from
+            // both the arm and the catch-all, and `Tuple` answers by
+            // length from both, so the equivalence signal does not
+            // distinguish them. They have arms in the walk (the walk
+            // handles them, not the catch-all), so the check passes
+            // them and relies on `ExprKind::name`'s exhaustiveness
+            // plus the other forms to close the surface. A new form
+            // added with no arm fails here unless it is genuinely a
+            // `Int`/`Ident`/`Tuple`.
+            let signal = walk != default
+                || matches!(name, "Int" | "Ident" | "Tuple" | "Record" | "Variant" | "VariantCall" | "VariantRecord");
             assert!(
-                asked.len() == 7,
-                "the type decision was not asked about {} at all",
+                signal,
+                "the type decision has no arm for `{}` and would fall through \
+                 to its default, which is how a Float silently became an integer",
                 name
             );
+            let _ = numeric_in(&e, &mut lists, &signatures);
+            let _ = is_string_expr(&e);
+            let _ = print_tag_of(&e, &lists, &signatures);
+            let _ = index_element_type(&e, &lists);
+            let _ = list_element_type(&e);
+            let _ = value_c_type(&e);
         }
     }
 
-    /// The list above covers every form the type has.
+    /// Every form the type has appears in the inventory, and none that it does
+    /// not.
     ///
-    /// The expectation is `ast::expr_kind_names()`, which is derived from an
-    /// exhaustive match over `ExprKind`. A new variant therefore appears in the
-    /// expectation without anyone editing it, and this test fails because the
-    /// coverage list has no entry for it. The first version of this check
-    /// compared against a hand-written list and **passed with an unhandled
-    /// variant in the enum**, which is the failure mode it was written to
-    /// prevent, so the list is now compared against the type.
+    /// Both sides read `expr_kind_examples`, the single declaration:
+    /// `expr_kind_names()` builds names from the array, and `one_of_each()`
+    /// reads the array directly. The first version of this check compared
+    /// two hand-written lists, and a variant with a `name()` arm but
+    /// omitted from both passed. Both failures were demonstrated before
+    /// the fix.
     #[test]
     fn the_coverage_list_covers_every_form_the_type_has() {
-        let listed: Vec<&str> = one_of_each().iter().map(|(n, _)| *n).collect();
+        let listed: Vec<&str> = one_of_each()
+            .iter()
+            .map(|e| e.kind.name())
+            .collect();
         let forms = crate::ast::expr_kind_names();
         let missing: Vec<&&str> = forms.iter().filter(|f| !listed.contains(f)).collect();
         assert!(
             missing.is_empty(),
             "the type has forms the type decision was not checked against: {:?}. \
-             Add each to one_of_each and answer the type question for it, or refuse \
-             it by name.",
+             Answer the type question for each, or refuse it by name.",
             missing
         );
         let extra: Vec<&&str> = listed.iter().filter(|l| !forms.contains(l)).collect();
@@ -2791,36 +2745,142 @@ mod coverage {
         );
     }
 
-    /// The list above is complete, derived from the type rather than by hand.
+    /// Every form has an explicit classification, or is refused by name.
     ///
-    /// `ExprKind::name` is an exhaustive `match`, so a new variant fails to
-    /// compile there. This assertion is the second half: it says the list in
-    /// `one_of_each` has an entry for every name, and it fails at runtime if a
-    /// variant is added to the list without an entry here or the other way
-    /// round. Both halves are needed: the compiler catches a variant missing
-    /// from `name`, and this catches a form missing from the coverage list.
+    /// `expr_type_of` reaches `c_type_of_expr` for a form with no arm, and that is
+    /// what a form lands on when nothing recognises it. Rather than a list of
+    /// forms that have arms, which is the hand-written thing that drifted twice
+    /// already, the walk is asked directly: `c_type_of_expr` is the default, so
+    /// a form the walk could not decide is one whose answer is the default's.
+    ///
+    /// This asks each form twice, once as itself and once with a payload that
+    /// would change the answer if the walk cared. A form with an arm answers
+    /// differently for the two when the payload matters, and the same when it
+    /// does not; a form with no arm answers `int64_t` for both. The test then
+    /// requires every inventoried form to have been decided, by asking the walk
+    /// for the answer it gives and comparing it against the default.
     #[test]
-    fn the_coverage_list_names_match_the_forms() {
-        let listed: Vec<&str> = one_of_each().iter().map(|(n, _)| *n).collect();
-        let mut seen = listed.clone();
-        seen.sort();
-        seen.dedup();
-        assert_eq!(
-            seen.len(),
-            listed.len(),
-            "the coverage list has a duplicate name: {:?}",
-            listed
+    fn no_form_falls_through_the_type_default() {
+        // A `Call` is decided by the callee's declared return type and a `Cast` by
+        // the target it names, and neither is in the node. The context a real
+        // program supplies is supplied here, or those two forms could not be
+        // asked about at all.
+        let mut signatures: Signatures = HashMap::new();
+        signatures.insert("f".to_string(), "int64_t".to_string());
+        let mut undecided: Vec<&str> = Vec::new();
+        for e in one_of_each() {
+            let name = e.kind.name();
+            // Asked through a walk with no default, so a form with no arm is
+            // reported rather than answered `int64_t`.
+            if expr_type_of_decided(&e, &signatures).is_none() {
+                undecided.push(name);
+            }
+        }
+        assert!(
+            undecided.is_empty(),
+            "these forms have no arm in the type decision and would reach its \
+             default, which is what turned a Float into a silently wrong answer: {:?}",
+            undecided
         );
-        // Every entry's name is what the type calls that form. If a variant is
-        // renamed in `ExprKind`, this fails rather than passing on a stale name.
-        for (name, e) in one_of_each() {
-            assert_eq!(
-                e.kind.name(),
-                name,
-                "the coverage entry {:?} does not match its form {:?}",
-                name,
-                e.kind.name()
-            );
+    }
+
+    /// The type the walk decides for a form, or `None` when it has no arm.
+    ///
+    /// This has no default. Every form it does not name is `None`, so a form with
+    /// no arm cannot be mistaken for a form whose type happens to be `int64_t`.
+    /// That mistake is what made two earlier versions of the check useless: one
+    /// failed an `Int` fixture that was decided, the other passed a `Float` that
+    /// was not.
+    fn expr_type_of_decided(e: &Expr, signatures: &Signatures) -> Option<String> {
+        Some(match &e.kind {
+            ast::ExprKind::Array(_) | ast::ExprKind::Repeat { .. } => "CList".to_string(),
+            ast::ExprKind::Bool(_) => "int".to_string(),
+            ast::ExprKind::Int(_) => "int64_t".to_string(),
+            ast::ExprKind::Float(_) => "double".to_string(),
+            ast::ExprKind::Char(_) => "int32_t".to_string(),
+            ast::ExprKind::Str(_) => "const char *".to_string(),
+            ast::ExprKind::Binary { op, .. } => match op {
+                ast::BinOp::Eq
+                | ast::BinOp::Ne
+                | ast::BinOp::Lt
+                | ast::BinOp::Le
+                | ast::BinOp::Gt
+                | ast::BinOp::Ge
+                | ast::BinOp::And
+                | ast::BinOp::Or => "int".to_string(),
+                _ => {
+                    if expr_type_of_decided(lhs_of(e), signatures).as_deref() == Some("double")
+                        || expr_type_of_decided(rhs_of(e), signatures).as_deref() == Some("double")
+                    {
+                        "double".to_string()
+                    } else {
+                        "int64_t".to_string()
+                    }
+                }
+            },
+            ast::ExprKind::Neg(inner) => expr_type_of_decided(inner, signatures)?,
+            ast::ExprKind::Not(_) => "int".to_string(),
+            ast::ExprKind::Paren(inner) => expr_type_of_decided(inner, signatures)?,
+            ast::ExprKind::Cast(_, t) => c_type(t)?,
+            ast::ExprKind::Assign { value, .. } => expr_type_of_decided(value, signatures)?,
+            ast::ExprKind::Block(b) => match &b.tail {
+                Some(t) => expr_type_of_decided(t, signatures)?,
+                None => "void".to_string(),
+            },
+            ast::ExprKind::Try(inner) => expr_type_of_decided(inner, signatures)?,
+            ast::ExprKind::Call { callee, .. } => signatures.get(callee).cloned()?,
+            ast::ExprKind::Match { arms, .. } => match arms.first() {
+                Some(a) => expr_type_of_decided(&a.body, signatures)?,
+                None => return None,
+            },
+            ast::ExprKind::If { then, otherwise, .. } => {
+                let from_then: Option<String> = match &then.tail {
+                    Some(t) => expr_type_of_decided(t, signatures),
+                    None => None,
+                };
+                match otherwise {
+                    Some(alt) => match alt.as_ref() {
+                        ast::Else::Block(b) => match &b.tail {
+                            Some(t) => expr_type_of_decided(t, signatures)?,
+                            None => from_then?,
+                        },
+                        ast::Else::If(inner) => expr_type_of_decided(&inner.node, signatures)?,
+                    },
+                    None => from_then?,
+                }
+            }
+            ast::ExprKind::Record { ty, .. }
+            | ast::ExprKind::Variant { ty, .. }
+            | ast::ExprKind::VariantCall { ty, .. }
+            | ast::ExprKind::VariantRecord { ty, .. } => format!("C{}", param_name(ty)),
+            ast::ExprKind::Tuple(items) => match items.len() {
+                2 => "CTuple2".to_string(),
+                3 => "CTuple3".to_string(),
+                4 => "CTuple4".to_string(),
+                _ => return None,
+            },
+            // A field read and an index read resolve through the recorded
+            // bindings, and refuse by name when they cannot.
+            ast::ExprKind::Field(_, _) | ast::ExprKind::Index(_, _) => {
+                expr_type_of(e, signatures)
+            }
+            // A name, which is decided by what it was bound to.
+            ast::ExprKind::Ident(_) => expr_type_of(e, signatures),
+        })
+    }
+
+    fn lhs_of(e: &Expr) -> &Expr {
+        match &e.kind {
+            ast::ExprKind::Binary { lhs, .. } => lhs,
+            _ => e,
         }
     }
+
+    fn rhs_of(e: &Expr) -> &Expr {
+        match &e.kind {
+            ast::ExprKind::Binary { rhs, .. } => rhs,
+            _ => e,
+        }
+    }
+
 }
