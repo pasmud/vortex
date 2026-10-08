@@ -289,7 +289,7 @@ pub fn expr_kind_examples() -> Vec<Expr> {
         form(ExprKind::Str(String::new())),
         form(ExprKind::Char(' ')),
         form(ExprKind::Bool(false)),
-        form(ExprKind::Ident(String::new())),
+        form(ExprKind::Ident("x".to_string())),
         form(ExprKind::Call {
             callee: "f".to_string(),
             args: Vec::new(),
