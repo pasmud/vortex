@@ -385,7 +385,7 @@ fn emit_stmt(
 ) -> Result<(), Unsupported> {
     match &s.kind {
         ast::StmtKind::Let { name, init, .. } => {
-            let c = expr_type_of(init, signatures);
+            let c = expr_type_of(init, lists, signatures);
             // Every binding is recorded at the type its initialiser has, so a
             // later `+` on the name can tell arithmetic from concatenation and
             // an index can read at the right element type. Only lists and
@@ -404,7 +404,7 @@ fn emit_stmt(
                     lists.insert(param_name(name), other.to_string());
                 }
             }
-            if expr_type_of(init, signatures) == "const char *" {
+            if expr_type_of(init, lists, signatures) == "const char *" {
                 lists.insert(param_name(name), "const char *".to_string());
             }
             indent(out, depth);
@@ -589,7 +589,7 @@ fn emit_stmt(
 /// say Int, which truncated a Float result.
 type Signatures = HashMap<String, String>;
 
-fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
+fn expr_type_of(e: &ast::Expr, lists: &HashMap<String, String>, signatures: &Signatures) -> String {
     match &e.kind {
         // A list is a struct with a pointer and a length, not a scalar.
         ast::ExprKind::Array(_) | ast::ExprKind::Repeat { .. } => "CList".to_string(),
@@ -614,8 +614,8 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
             // interpreter follows. Without it `v * 0.5 + 1.0` declared an
             // integer and truncated 2.5 to 2.
             _ => {
-                if expr_type_of(lhs, signatures) == "double"
-                    || expr_type_of(rhs, signatures) == "double"
+                if expr_type_of(lhs, lists, signatures) == "double"
+                    || expr_type_of(rhs, lists, signatures) == "double"
                 {
                     "double".to_string()
                 } else {
@@ -623,30 +623,30 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
                 }
             }
         },
-        ast::ExprKind::Neg(inner) => expr_type_of(inner, signatures),
+        ast::ExprKind::Neg(inner) => expr_type_of(inner, lists, signatures),
         // These eight each reached the default below, which is `int64_t` for
         // anything it does not name. That default is what turned a `Float` into
         // a silently wrong answer in stage 8, so each says what it is instead.
         // `Not` is a `Bool`, `Cast` the target it names, and the rest take the
         // type of what they carry.
         ast::ExprKind::Not(_) => "int".to_string(),
-        ast::ExprKind::Paren(inner) => expr_type_of(inner, signatures),
+        ast::ExprKind::Paren(inner) => expr_type_of(inner, lists, signatures),
         ast::ExprKind::Cast(_, t) => c_type(t).unwrap_or_else(|| "int64_t".to_string()),
-        ast::ExprKind::Assign { value, .. } => expr_type_of(value, signatures),
+        ast::ExprKind::Assign { value, .. } => expr_type_of(value, lists, signatures),
         ast::ExprKind::Block(b) => b
             .tail
             .as_deref()
-            .map(|t| expr_type_of(t, signatures))
+            .map(|t| expr_type_of(t, lists, signatures))
             .unwrap_or_else(|| "void".to_string()),
-        ast::ExprKind::Try(inner) => expr_type_of(inner, signatures),
-        ast::ExprKind::Index(base, _) => index_value_type(base, signatures),
-        ast::ExprKind::Field(base, field) => field_value_type(base, field, signatures),
+        ast::ExprKind::Try(inner) => expr_type_of(inner, lists, signatures),
+        ast::ExprKind::Index(base, _) => index_value_type(base, lists),
+        ast::ExprKind::Field(base, field) => field_value_type(base, field, lists, signatures),
         // A `match` has the type of its arms. The first arm is representative:
         // the checker requires every arm to agree, so reading one is not a
         // guess.
         ast::ExprKind::Match { arms, .. } => arms
             .first()
-            .map(|a| expr_type_of(&a.body, signatures))
+            .map(|a| expr_type_of(&a.body, lists, signatures))
             .unwrap_or_else(|| "int64_t".to_string()),
         // An `if` used as a value has the type of its branches, and the
         // checker requires them to agree. A branch is a block, so its type is
@@ -655,13 +655,13 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
             then, otherwise, ..
         } => {
             let from_then =
-                block_value_type(then, signatures).unwrap_or_else(|| "int64_t".to_string());
+                block_value_type(then, lists, signatures).unwrap_or_else(|| "int64_t".to_string());
             match otherwise {
                 Some(alt) => match alt.as_ref() {
                     ast::Else::Block(b) => {
-                        block_value_type(b, signatures).unwrap_or_else(|| from_then.clone())
+                        block_value_type(b, lists, signatures).unwrap_or_else(|| from_then.clone())
                     }
-                    ast::Else::If(inner) => expr_type_of(&inner.node, signatures),
+                    ast::Else::If(inner) => expr_type_of(&inner.node, lists, signatures),
                 },
                 None => from_then,
             }
@@ -683,8 +683,14 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
 /// own node.
 /// The type of a block used as a value, which is the type of its trailing
 /// expression.
-fn block_value_type(b: &ast::Block, signatures: &Signatures) -> Option<String> {
-    b.tail.as_deref().map(|t| expr_type_of(t, signatures))
+fn block_value_type(
+    b: &ast::Block,
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> Option<String> {
+    b.tail
+        .as_deref()
+        .map(|t| expr_type_of(t, lists, signatures))
 }
 
 fn c_type_of_expr(e: &ast::Expr, _signatures: &Signatures) -> String {
@@ -714,9 +720,17 @@ fn c_type_of_expr(e: &ast::Expr, _signatures: &Signatures) -> String {
 /// It used to reach the walk's default. A `Float` field read as an integer was
 /// one of the nine instances, and this is the arm that keeps it from happening
 /// again.
-fn field_value_type(base: &ast::Expr, field: &str, signatures: &Signatures) -> String {
+fn field_value_type(
+    base: &ast::Expr,
+    field: &str,
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> String {
     let struct_name = match &base.kind {
-        ast::ExprKind::Ident(n) => match signatures.get(n).map(|s| s.as_str()) {
+        // The type a field read is taken from is the one the binding recorded
+        // for the base, so a `Point` parameter reads at a Point field rather
+        // than at the walk's default.
+        ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).map(|s| s.as_str()) {
             Some(t) if t.starts_with('C') => t[1..].to_string(),
             _ => String::new(),
         },
@@ -737,15 +751,16 @@ fn field_value_type(base: &ast::Expr, field: &str, signatures: &Signatures) -> S
 /// The C type an index read produces, which is the element type of the list.
 ///
 /// It used to reach the walk's default too, so a `Float` list read as an integer.
-fn index_value_type(base: &ast::Expr, signatures: &Signatures) -> String {
+fn index_value_type(base: &ast::Expr, lists: &HashMap<String, String>) -> String {
     match &base.kind {
-        ast::ExprKind::Ident(n) => match signatures.get(n).map(|s| s.as_str()) {
+        ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).map(|s| s.as_str()) {
             // A string is indexed by character.
             Some("const char *") => "int32_t".to_string(),
-            // A list of a declared struct or enum reads that struct.
-            Some(t) if t.starts_with('C') => t.to_string(),
-            Some("CList") => "<undecided:list>".to_string(),
-            _ => "<undecided:index>".to_string(),
+            // A list's binding holds its element type directly, whether that is
+            // a scalar or a declared struct, so the read is typed at the element.
+            Some(t) => t.to_string(),
+            // An unknown base is named, not guessed as int64_t.
+            None => "<undecided:index>".to_string(),
         },
         _ => "<undecided:index>".to_string(),
     }
@@ -845,7 +860,7 @@ fn emit_expr(
         ast::ExprKind::Repeat { value, count } => {
             // `[v; n]` builds a list of the value's type, so the constructor
             // is chosen by that type rather than by an index.
-            let elem = expr_type_of(value, signatures);
+            let elem = expr_type_of(value, lists, signatures);
             let v = emit_expr(value, lists, signatures)?;
             let n = emit_expr(count, lists, signatures)?;
             format!(
@@ -1067,7 +1082,7 @@ fn emit_expr(
             then,
             otherwise,
         } => {
-            let ty = expr_type_of(e, signatures);
+            let ty = expr_type_of(e, lists, signatures);
             let c = format!("__vortex_c{}_{}", e.pos.line, e.pos.col);
             let t = emit_block_expr(then, lists, signatures)?;
             let o = match otherwise {
@@ -1297,7 +1312,7 @@ fn emit_match(
             e.pos,
         ));
     }
-    let ty = expr_type_of(e, signatures);
+    let ty = expr_type_of(e, lists, signatures);
     let subject = emit_expr(scrutinee, lists, signatures)?;
 
     // Each arm contributes one declaration and one test. The first matching arm
@@ -2685,7 +2700,7 @@ mod coverage {
             // int64_t, so a walk that reached it returns the same type
             // for this form as c_type_of_expr would — that equivalence
             // is the signal, and a form with a real arm cannot match it.
-            let walk = expr_type_of(&e, &signatures);
+            let walk = expr_type_of(&e, &lists, &signatures);
             let default = c_type_of_expr(&e, &signatures);
             // A form with an arm answers differently from the catch-all
             // for this fixture. `Int` and `Ident` answer `int64_t` from
@@ -2698,7 +2713,16 @@ mod coverage {
             // added with no arm fails here unless it is genuinely a
             // `Int`/`Ident`/`Tuple`.
             let signal = walk != default
-                || matches!(name, "Int" | "Ident" | "Tuple" | "Record" | "Variant" | "VariantCall" | "VariantRecord");
+                || matches!(
+                    name,
+                    "Int"
+                        | "Ident"
+                        | "Tuple"
+                        | "Record"
+                        | "Variant"
+                        | "VariantCall"
+                        | "VariantRecord"
+                );
             assert!(
                 signal,
                 "the type decision has no arm for `{}` and would fall through \
@@ -2725,10 +2749,7 @@ mod coverage {
     /// the fix.
     #[test]
     fn the_coverage_list_covers_every_form_the_type_has() {
-        let listed: Vec<&str> = one_of_each()
-            .iter()
-            .map(|e| e.kind.name())
-            .collect();
+        let listed: Vec<&str> = one_of_each().iter().map(|e| e.kind.name()).collect();
         let forms = crate::ast::expr_kind_names();
         let missing: Vec<&&str> = forms.iter().filter(|f| !listed.contains(f)).collect();
         assert!(
@@ -2767,12 +2788,13 @@ mod coverage {
         // asked about at all.
         let mut signatures: Signatures = HashMap::new();
         signatures.insert("f".to_string(), "int64_t".to_string());
+        let lists: HashMap<String, String> = HashMap::new();
         let mut undecided: Vec<&str> = Vec::new();
         for e in one_of_each() {
             let name = e.kind.name();
             // Asked through a walk with no default, so a form with no arm is
             // reported rather than answered `int64_t`.
-            if expr_type_of_decided(&e, &signatures).is_none() {
+            if expr_type_of_decided(&e, &lists, &signatures).is_none() {
                 undecided.push(name);
             }
         }
@@ -2791,7 +2813,11 @@ mod coverage {
     /// That mistake is what made two earlier versions of the check useless: one
     /// failed an `Int` fixture that was decided, the other passed a `Float` that
     /// was not.
-    fn expr_type_of_decided(e: &Expr, signatures: &Signatures) -> Option<String> {
+    fn expr_type_of_decided(
+        e: &Expr,
+        lists: &HashMap<String, String>,
+        signatures: &Signatures,
+    ) -> Option<String> {
         Some(match &e.kind {
             ast::ExprKind::Array(_) | ast::ExprKind::Repeat { .. } => "CList".to_string(),
             ast::ExprKind::Bool(_) => "int".to_string(),
@@ -2809,8 +2835,10 @@ mod coverage {
                 | ast::BinOp::And
                 | ast::BinOp::Or => "int".to_string(),
                 _ => {
-                    if expr_type_of_decided(lhs_of(e), signatures).as_deref() == Some("double")
-                        || expr_type_of_decided(rhs_of(e), signatures).as_deref() == Some("double")
+                    if expr_type_of_decided(lhs_of(e), lists, signatures).as_deref()
+                        == Some("double")
+                        || expr_type_of_decided(rhs_of(e), lists, signatures).as_deref()
+                            == Some("double")
                     {
                         "double".to_string()
                     } else {
@@ -2818,33 +2846,37 @@ mod coverage {
                     }
                 }
             },
-            ast::ExprKind::Neg(inner) => expr_type_of_decided(inner, signatures)?,
+            ast::ExprKind::Neg(inner) => expr_type_of_decided(inner, lists, signatures)?,
             ast::ExprKind::Not(_) => "int".to_string(),
-            ast::ExprKind::Paren(inner) => expr_type_of_decided(inner, signatures)?,
+            ast::ExprKind::Paren(inner) => expr_type_of_decided(inner, lists, signatures)?,
             ast::ExprKind::Cast(_, t) => c_type(t)?,
-            ast::ExprKind::Assign { value, .. } => expr_type_of_decided(value, signatures)?,
+            ast::ExprKind::Assign { value, .. } => expr_type_of_decided(value, lists, signatures)?,
             ast::ExprKind::Block(b) => match &b.tail {
-                Some(t) => expr_type_of_decided(t, signatures)?,
+                Some(t) => expr_type_of_decided(t, lists, signatures)?,
                 None => "void".to_string(),
             },
-            ast::ExprKind::Try(inner) => expr_type_of_decided(inner, signatures)?,
+            ast::ExprKind::Try(inner) => expr_type_of_decided(inner, lists, signatures)?,
             ast::ExprKind::Call { callee, .. } => signatures.get(callee).cloned()?,
             ast::ExprKind::Match { arms, .. } => match arms.first() {
-                Some(a) => expr_type_of_decided(&a.body, signatures)?,
+                Some(a) => expr_type_of_decided(&a.body, lists, signatures)?,
                 None => return None,
             },
-            ast::ExprKind::If { then, otherwise, .. } => {
+            ast::ExprKind::If {
+                then, otherwise, ..
+            } => {
                 let from_then: Option<String> = match &then.tail {
-                    Some(t) => expr_type_of_decided(t, signatures),
+                    Some(t) => expr_type_of_decided(t, lists, signatures),
                     None => None,
                 };
                 match otherwise {
                     Some(alt) => match alt.as_ref() {
                         ast::Else::Block(b) => match &b.tail {
-                            Some(t) => expr_type_of_decided(t, signatures)?,
+                            Some(t) => expr_type_of_decided(t, lists, signatures)?,
                             None => from_then?,
                         },
-                        ast::Else::If(inner) => expr_type_of_decided(&inner.node, signatures)?,
+                        ast::Else::If(inner) => {
+                            expr_type_of_decided(&inner.node, lists, signatures)?
+                        }
                     },
                     None => from_then?,
                 }
@@ -2862,10 +2894,10 @@ mod coverage {
             // A field read and an index read resolve through the recorded
             // bindings, and refuse by name when they cannot.
             ast::ExprKind::Field(_, _) | ast::ExprKind::Index(_, _) => {
-                expr_type_of(e, signatures)
+                expr_type_of(e, lists, signatures)
             }
             // A name, which is decided by what it was bound to.
-            ast::ExprKind::Ident(_) => expr_type_of(e, signatures),
+            ast::ExprKind::Ident(_) => expr_type_of(e, lists, signatures),
         })
     }
 
@@ -2882,5 +2914,4 @@ mod coverage {
             _ => e,
         }
     }
-
 }

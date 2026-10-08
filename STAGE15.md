@@ -11,80 +11,118 @@ This stage adds a check that makes the next one fail the build instead.
 ## The rule
 
 Nothing in the emitter classifies a value by matching its node kind and hoping.
-Every classification goes through `ExprKind::name`, which is an **exhaustive
-`match` with no wildcard**, so a variant with no name does not compile.
+The enforcement has two layers, one compile-time and one runtime.
 
-`ast::expr_kind_names()` builds one value of every form and asks each for its
-name. It is derived from the type, so a new variant contributes its name to the
-list without anyone editing the list.
+**Compile time.** `ExprKind::name` and `expr_type_of_decided` are both
+**exhaustive `match`es with no wildcard**. `cgen::coverage::expr_type_of_decided`
+is a second copy of the type decision that exists only so the check can ask every
+form for its type and get `None` (no arm) rather than a default. A variant with
+no arm in `name` or `expr_type_of_decided` does not compile, at the match that
+lacks it. `lower.rs` `expr` is exhaustive too, so a new variant is refused there
+as well. These are four sites the compiler forces an arm in before a single test
+runs, and they are the real guarantee of this stage: the next unhandled variant
+is a compiler error at the point of change.
 
-`cgen::coverage::the_coverage_list_covers_every_form_the_type_has` compares the
-forms the type has against the forms the coverage list exercises, and names what
-is missing:
+**Runtime.** `ast::expr_kind_examples()` is a single listing of one value of
+every form; both `ast::expr_kind_names()` and `cgen::coverage::one_of_each()`
+read it, so the two readers cannot drift relative to each other. The check
+asks every form in that listing through the seven classification functions the
+emitter uses, and `no_form_falls_through_the_type_default` asks the same forms
+through `expr_type_of_decided` (which has no default) and fails if any returns
+`None`. That is the layer the brief wanted: a form with no classifier arm is a
+failed test, not a silently wrong type.
 
-    the type has forms the type decision was not checked against: ["Probe"].
-    Add each to one_of_each and answer the type question for it, or refuse it by
-    name.
-
-`cgen::coverage::the_type_decision_covers_every_expression_form` then asks every
-classification the emitter makes about a value, so a form with no arm in any of
-them is exercised rather than skipped.
-
-**Three tests, and all three run in CI** as their own step, because a check that
-only runs locally is a check that will be bypassed the first time it is
-inconvenient.
+The inventory array is not derived from the type by an exhaustive match, because
+stable Rust without an enum-iteration crate (this project has none) cannot
+enumerate an enum's variants. It is a single declaration rather than two
+hand-written lists, which is the narrower thing that is provable, and it is
+documented honestly in the next section.
 
 ## The evidence that it bites, and how the first attempt did not
 
 **The first version of this check passed with an unhandled variant in the enum.**
-It compared against a hand-written list of the forms that exist today, which is
-the failure mode the brief named: a check that passes forever and catches nothing
-new. A `Probe` variant was added to `ExprKind`, an arm was given to `name()` so
-the compiler would not object, and the check still passed, because the list was
-written out by hand and did not know about `Probe`.
+It compared two hand-written lists of the forms, which is the failure mode the
+brief named: a check that passes forever and catches nothing new. A `Probe`
+variant was added to `ExprKind`, an arm was given to `name()` so the compiler
+would not object, and the check still passed, because both lists were written out
+by hand and neither knew about `Probe`. The first attempt also had a second
+defect: `asked.len() == 7` held for every fixture because the array always had
+seven elements, so a form with no classifier arms fell through `expr_type_of` to
+its default `int64_t` and the test still passed. That default is the original
+defect stage 14 named.
 
-That is the whole reason the list is now derived from the type. The proof, done
-twice:
+**Review finding 2 (no silent int64_t default), reproduced.** `c_type_of_expr`'s
+catch-all used to answer `int64_t` for anything it did not name, and
+`expr_type_of` delegated to it. That silent answer is what hid forms that had no
+arm. The catch-all now returns `<undecided:NAME>` instead, and
+`expr_type_of_decided` is a separate walk with **no catch-all at all**: it
+returns `None` for a form with no arm. A `Probe` variant added to `ExprKind`
+fails the build here first:
 
-1. `Probe` added to `ExprKind` with an arm in `name()`. The build fails
-   immediately:
-   `error[E0004]: non-exhaustive patterns: ExprKind::Probe not covered`.
-   That is the first layer, and it is the compiler rather than the check.
-2. The same `Probe`, given an arm in `lower.rs` so the compiler reports the next
-   place instead. Now the **check** fires, and it names the variant:
-   `the type has forms the type decision was not checked against: ["Probe"]`.
+    error[E0004]: non-exhaustive patterns: `&ExprKind::Probe` not covered
+    crates/vortexc/src/cgen.rs:2808
 
-Both were run, both failed as described, and the probe was then removed and its
-absence confirmed by `grep`.
+giving it a `None` arm so the compiler stops, then the **test** fires and names
+the variant:
 
-**What the check would not have caught.** The compiler's exhaustiveness is a
-compile error naming a variant, which is the point of doing it this way rather
-than with a hand-written list. The check adds a second layer at a different
-place: it says the emitter's type questions have been *asked* about every form,
-which the compiler cannot say, because `cgen.rs` uses wildcards and so is
-exhaustive by fallback rather than by arm.
+    these forms have no arm in the type decision and would reach its default,
+    which is what turned a Float into a silently wrong answer: ["Probe"]
+
+Both layers were reproduced and then the probe removed; `grep` confirms its
+absence.
+
+**Review finding 1 (single-source inventory), reproduced.** A `Probe` variant
+given an arm in `name()` and an arm in `expr_type_of_decided` (returning `None`,
+so the build succeeds) but omitted from the `expr_kind_examples` array passes
+every runtime test, because both `expr_kind_names` and `one_of_each` read that
+same array and neither sees the variant. The narrowing is documented in the
+guarantees section: stable Rust cannot enumerate variants to prove the array
+complete, so the residual case is caught by the compiler at the exhaustive
+matches or by the emitter's refusal at emit time, not by the runtime test.
 
 ## What it guarantees, and what it does not
 
-**It guarantees** that adding a variant to `ExprKind` fails the build twice over:
-once because `name` has no arm for it, and once because the coverage list has no
-entry naming it. Neither failure can be satisfied by editing a list of forms,
-because both lists are derived from the same array.
+**It guarantees** that adding a variant to `ExprKind` fails the build at the
+exhaustive `match` in `ExprKind::name` and again at the exhaustive `match` in
+`expr_type_of_decided`, unless an arm is given to each. Those two matches have no
+wildcard, so the compiler, not a list, proves the arms exist. Once an arm is
+added to both, the build succeeds; a further test then proves the arm actually
+decides a type rather than reaching a default.
 
-**Finding 1 from review (verified and fixed):** the first version of the check
-compared two hand-written lists, and a variant with a `name()` arm but omitted
-from both drifted through. That is fixed: `expr_kind_names` and `one_of_each`
-both read `expr_kind_examples`, the single array, so they cannot drift. The
-original failure was reproduced after the fix and then closed.
+**Review finding 1 (single-source inventory, verified, fixed, and narrowed).** The
+first version of the check compared two hand-written lists, and a variant with a
+`name()` arm but omitted from both drifted through. That is fixed: `expr_kind_names`
+and `one_of_each` now both read `expr_kind_examples`, the single array, so the two
+views cannot drift relative to each other. The original failure was reproduced
+after the fix.
 
-**Finding 2 from review (verified and fixed):** `asked.len() == 7` held for every
+The residual limitation is named honestly. `ExprKind::name` and
+`expr_type_of_decided` are exhaustive matches, so a new variant must get an arm
+in both or the build fails. A variant that is given both arms but is omitted from
+the `expr_kind_examples` array passes the build and is not seen by the runtime
+tests, because stable Rust with no enum-iteration crate in this project cannot
+enumerate an enum's variants to prove a hand-listed array complete. The array is
+a single listing read by every consumer, so it is the place a new form must be
+entered, and the compiler forces the entry to exist at the two exhaustive
+matches; but omitting it from the array after those arms exist is not a runtime
+failure. The backstop is the emitter's own refusal: `emit_expr`'s catch-all
+returns `Unsupported::Construct` naming the form when a program actually uses it,
+so the form emits no silent wrong code even if it slips past the coverage
+inventory.
+
+**Finding 2 from review (verified and fixed).** `asked.len() == 7` held for every
 fixture because the array always had seven elements, so a form added to both
 inventories with no classifier arms fell through `expr_type_of` to its default
 `int64_t` and the test still passed. That default is the original defect stage 14
-named. This is fixed by adding a `no_form_falls_through_the_type_default` test
-that asks `expr_type_of_decided` directly, with no default: a form with no arm
-returns `None` and the test fails. The original failure was reproduced after the
-fix and then closed.
+named. This is fixed in two layers:
+
+1. `c_type_of_expr`'s catch-all now returns `<undecided:NAME>` instead of
+   `int64_t`, so a fall-through is named rather than answered silently.
+2. `no_form_falls_through_the_type_default` asks `expr_type_of_decided` directly,
+   which has no catch-all and returns `None` for a form with no arm. The original
+   failure was reproduced after the fix: a `Probe` variant with a `name()` arm and
+   an `expr_type_of_decided` arm that returned `None` made the test fail, naming
+   `["Probe"]`, and was then removed.
 
 **It does not guarantee the language is correct.** A check that fails the build
 on a missing variant makes the next missing variant **loud and immediate** rather
@@ -118,8 +156,9 @@ small change**, for reasons the reading showed:
 - They answer different questions with different return types: a C type string, a
   boolean, and a boolean about strings.
 - They take different context: `numeric_in` needs the recorded bindings and the
-  signature table, `is_string_expr` needs neither, and `expr_type_of` needs the
-  signature table but not the bindings.
+  signature table, `is_string_expr` needs neither, and `expr_type_of` needs both
+  (the bindings to resolve field and index reads through the name a value was
+  bound to, and the signature table for call return types).
 - Their arms disagree on purpose. `is_string_expr` says a `Cast` to `Str` is a
   string; `numeric_in` says the same cast is not a number; `expr_type_of` says it
   is `const char *`. One function would need three answers per form or a result
@@ -129,3 +168,23 @@ The brief asked for one check that provably bites over one check plus an
 unverifiable refactor, and that is what this is. The check covers all seven
 classification functions the emitter makes, including the two beyond the three
 the brief named, by asking every one of them for every form.
+
+## Acceptance
+
+- Adding a variant to `ExprKind` that nothing handles makes `cargo build` fail with
+  `error[E0004]: non-exhaustive patterns`, then after an arm is given to keep the
+  build green, `cargo test` fails with a diagnostic naming the variant. Proven by
+  adding `Probe`, observing both failures, and removing it. `grep` confirms its
+  absence.
+- All seven examples agree on tree, VM and compiled output at `-O2` and `-O0`
+  (`scripts/check-examples.sh`).
+- 3 coverage tests plus the existing suite all pass (229 tests total across all
+  crates); `scripts/check-benchmarks.sh` passes (this stage makes no
+  performance claim, so it is not extended there).
+- The check runs in CI as the step "Check the emitter's type decision covers
+  every expression form" — a check that only runs locally is bypassed in practice.
+- `cargo fmt --check` clean, and `cargo build` clean under `-D warnings`.
+- No `git checkout`, `git restore`, or any discarding command was used.
+  `expr_type_of` now takes `lists` so field and index reads resolve through the
+  binding table (fixing the `structs.vx` regression the first cut of this stage
+  introduced) rather than guessing a type.
