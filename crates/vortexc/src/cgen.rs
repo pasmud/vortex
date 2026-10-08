@@ -385,7 +385,7 @@ fn emit_stmt(
 ) -> Result<(), Unsupported> {
     match &s.kind {
         ast::StmtKind::Let { name, init, .. } => {
-            let c = expr_type_of(init, signatures);
+            let c = decided_type(init, lists, signatures)?;
             // Every binding is recorded at the type its initialiser has, so a
             // later `+` on the name can tell arithmetic from concatenation and
             // an index can read at the right element type. Only lists and
@@ -404,7 +404,7 @@ fn emit_stmt(
                     lists.insert(param_name(name), other.to_string());
                 }
             }
-            if expr_type_of(init, signatures) == "const char *" {
+            if expr_type_of(init, lists, signatures) == "const char *" {
                 lists.insert(param_name(name), "const char *".to_string());
             }
             indent(out, depth);
@@ -589,7 +589,7 @@ fn emit_stmt(
 /// say Int, which truncated a Float result.
 type Signatures = HashMap<String, String>;
 
-fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
+fn expr_type_of(e: &ast::Expr, lists: &HashMap<String, String>, signatures: &Signatures) -> String {
     match &e.kind {
         // A list is a struct with a pointer and a length, not a scalar.
         ast::ExprKind::Array(_) | ast::ExprKind::Repeat { .. } => "CList".to_string(),
@@ -614,8 +614,8 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
             // interpreter follows. Without it `v * 0.5 + 1.0` declared an
             // integer and truncated 2.5 to 2.
             _ => {
-                if expr_type_of(lhs, signatures) == "double"
-                    || expr_type_of(rhs, signatures) == "double"
+                if expr_type_of(lhs, lists, signatures) == "double"
+                    || expr_type_of(rhs, lists, signatures) == "double"
                 {
                     "double".to_string()
                 } else {
@@ -623,13 +623,38 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
                 }
             }
         },
-        ast::ExprKind::Neg(inner) => expr_type_of(inner, signatures),
+        ast::ExprKind::Neg(inner) => expr_type_of(inner, lists, signatures),
+        // These eight each reached the default below, which is `int64_t` for
+        // anything it does not name. That default is what turned a `Float` into
+        // a silently wrong answer in stage 8, so each says what it is instead.
+        // `Not` is a `Bool`, `Cast` the target it names, and the rest take the
+        // type of what they carry.
+        ast::ExprKind::Not(_) => "int".to_string(),
+        ast::ExprKind::Paren(inner) => expr_type_of(inner, lists, signatures),
+        ast::ExprKind::Cast(_, t) => c_type(t).unwrap_or_else(|| "int64_t".to_string()),
+        ast::ExprKind::Assign { value, .. } => expr_type_of(value, lists, signatures),
+        ast::ExprKind::Block(b) => b
+            .tail
+            .as_deref()
+            .map(|t| expr_type_of(t, lists, signatures))
+            .unwrap_or_else(|| "void".to_string()),
+        ast::ExprKind::Try(inner) => expr_type_of(inner, lists, signatures),
+        ast::ExprKind::Index(base, _) => index_value_type(base, lists),
+        ast::ExprKind::Field(base, field) => field_value_type(base, field, lists, signatures),
+        // A name's type is what it was bound to, read from the binding table
+        // rather than defaulted. An unbound name does not reach the emitter in a
+        // valid program; refusing it by name here makes the failure explicit
+        // instead of silently `int64_t`.
+        ast::ExprKind::Ident(n) => match lists.get(&param_name(n)) {
+            Some(t) => t.clone(),
+            None => format!("<undecided:{}>", e.kind.name()),
+        },
         // A `match` has the type of its arms. The first arm is representative:
         // the checker requires every arm to agree, so reading one is not a
         // guess.
         ast::ExprKind::Match { arms, .. } => arms
             .first()
-            .map(|a| expr_type_of(&a.body, signatures))
+            .map(|a| expr_type_of(&a.body, lists, signatures))
             .unwrap_or_else(|| "int64_t".to_string()),
         // An `if` used as a value has the type of its branches, and the
         // checker requires them to agree. A branch is a block, so its type is
@@ -638,13 +663,13 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
             then, otherwise, ..
         } => {
             let from_then =
-                block_value_type(then, signatures).unwrap_or_else(|| "int64_t".to_string());
+                block_value_type(then, lists, signatures).unwrap_or_else(|| "int64_t".to_string());
             match otherwise {
                 Some(alt) => match alt.as_ref() {
                     ast::Else::Block(b) => {
-                        block_value_type(b, signatures).unwrap_or_else(|| from_then.clone())
+                        block_value_type(b, lists, signatures).unwrap_or_else(|| from_then.clone())
                     }
-                    ast::Else::If(inner) => expr_type_of(&inner.node, signatures),
+                    ast::Else::If(inner) => expr_type_of(&inner.node, lists, signatures),
                 },
                 None => from_then,
             }
@@ -661,18 +686,50 @@ fn expr_type_of(e: &ast::Expr, signatures: &Signatures) -> String {
     }
 }
 
+/// The C type an expression produces, refused rather than guessed when the
+/// walk cannot name one.
+///
+/// `expr_type_of` answers `int64_t` for a value whose own type is known, but it
+/// returns a `<undecided:...>` marker for a value whose type it cannot recover
+/// from the recorded bindings (an unbound name, a field of a struct the emitter
+/// has no declaration for, an index into something that is not a list). That
+/// marker is not a C type and must not reach emission, so the call sites that
+/// need a usable type go through here and refuse by name instead.
+fn decided_type(
+    e: &ast::Expr,
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> Result<String, Unsupported> {
+    let t = expr_type_of(e, lists, signatures);
+    if t.starts_with("<undecided:") {
+        return Err(Unsupported::Construct(
+            format!(
+                "the type of `{}`, which the emitter cannot name",
+                e.kind.name()
+            ),
+            e.pos,
+        ));
+    }
+    Ok(t)
+}
+
 /// The type of an expression the arithmetic rule has no answer for, which is
 /// most expressions reached through a declaration rather than through their
 /// own node.
 /// The type of a block used as a value, which is the type of its trailing
 /// expression.
-fn block_value_type(b: &ast::Block, signatures: &Signatures) -> Option<String> {
-    b.tail.as_deref().map(|t| expr_type_of(t, signatures))
+fn block_value_type(
+    b: &ast::Block,
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> Option<String> {
+    b.tail
+        .as_deref()
+        .map(|t| expr_type_of(t, lists, signatures))
 }
 
 fn c_type_of_expr(e: &ast::Expr, _signatures: &Signatures) -> String {
     match &e.kind {
-        ast::ExprKind::Ident(_) => "int64_t".to_string(),
         ast::ExprKind::Record { ty, .. }
         | ast::ExprKind::Variant { ty, .. }
         | ast::ExprKind::VariantCall { ty, .. }
@@ -683,7 +740,63 @@ fn c_type_of_expr(e: &ast::Expr, _signatures: &Signatures) -> String {
             4 => "CTuple4".to_string(),
             n => format!("a {n} element tuple"),
         },
-        _ => "int64_t".to_string(),
+        // A form the walk has no arm for. It used to answer `int64_t` here, and
+        // that default is what turned a `Float` into a silently wrong answer in
+        // stage 8. Naming the form instead means a caller can refuse it by name,
+        // and `no_form_falls_through_the_type_default` can tell that this
+        // fallback was reached.
+        other => format!("<undecided:{}>", other.name()),
+    }
+}
+
+/// The C type a field read produces, which is the declared type of that field.
+///
+/// It used to reach the walk's default. A `Float` field read as an integer was
+/// one of the nine instances, and this is the arm that keeps it from happening
+/// again.
+fn field_value_type(
+    base: &ast::Expr,
+    field: &str,
+    lists: &HashMap<String, String>,
+    signatures: &Signatures,
+) -> String {
+    let struct_name = match &base.kind {
+        // The type a field read is taken from is the one the binding recorded
+        // for the base, so a `Point` parameter reads at a Point field rather
+        // than at the walk's default.
+        ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).map(|s| s.as_str()) {
+            Some(t) if t.starts_with('C') => t[1..].to_string(),
+            _ => String::new(),
+        },
+        ast::ExprKind::Call { callee, .. } => match signatures.get(callee).map(|s| s.as_str()) {
+            Some(t) if t.starts_with('C') => t[1..].to_string(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+    match field_type(&struct_name, field) {
+        Some(t) => t,
+        // A field of a struct the emitter has no declaration for is not an
+        // integer. It says so rather than answering with one.
+        None => format!("<undecided:field {}>", field),
+    }
+}
+
+/// The C type an index read produces, which is the element type of the list.
+///
+/// It used to reach the walk's default too, so a `Float` list read as an integer.
+fn index_value_type(base: &ast::Expr, lists: &HashMap<String, String>) -> String {
+    match &base.kind {
+        ast::ExprKind::Ident(n) => match lists.get(&param_name(n)).map(|s| s.as_str()) {
+            // A string is indexed by character.
+            Some("const char *") => "int32_t".to_string(),
+            // A list's binding holds its element type directly, whether that is
+            // a scalar or a declared struct, so the read is typed at the element.
+            Some(t) => t.to_string(),
+            // An unknown base is named, not guessed as int64_t.
+            None => "<undecided:index>".to_string(),
+        },
+        _ => "<undecided:index>".to_string(),
     }
 }
 
@@ -781,7 +894,7 @@ fn emit_expr(
         ast::ExprKind::Repeat { value, count } => {
             // `[v; n]` builds a list of the value's type, so the constructor
             // is chosen by that type rather than by an index.
-            let elem = expr_type_of(value, signatures);
+            let elem = decided_type(value, lists, signatures)?;
             let v = emit_expr(value, lists, signatures)?;
             let n = emit_expr(count, lists, signatures)?;
             format!(
@@ -1003,7 +1116,7 @@ fn emit_expr(
             then,
             otherwise,
         } => {
-            let ty = expr_type_of(e, signatures);
+            let ty = decided_type(e, lists, signatures)?;
             let c = format!("__vortex_c{}_{}", e.pos.line, e.pos.col);
             let t = emit_block_expr(then, lists, signatures)?;
             let o = match otherwise {
@@ -1233,7 +1346,17 @@ fn emit_match(
             e.pos,
         ));
     }
-    let ty = expr_type_of(e, signatures);
+    let ty = {
+        // A match has the type of its first arm's body. That body's names are the
+        // first arm's pattern bindings, so record them before asking the walk —
+        // otherwise a binding pulled out of a variant payload, such as `n` in
+        // `Pair.mixed { n, r } => n`, is an unbound name and the type decision
+        // would refuse it instead of reading the payload's real type.
+        for p in &arms[0].patterns {
+            record_pattern_bindings(p, lists);
+        }
+        decided_type(e, lists, signatures)?
+    };
     let subject = emit_expr(scrutinee, lists, signatures)?;
 
     // Each arm contributes one declaration and one test. The first matching arm
@@ -2555,5 +2678,325 @@ fn collect_calls_expr(e: &ast::Expr, out: &mut Vec<String>) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod coverage {
+    use super::*;
+    use crate::ast::Expr;
+
+    /// Every `ExprKind` variant, one of each, built without naming a variant the
+    /// list does not contain.
+    ///
+    /// The list is derived from the type, not written out by hand. That is the
+    /// whole point: a check that compares against a hardcoded list of today's
+    /// variants passes forever and catches nothing new, which is the failure
+    /// mode this check exists to avoid. Adding a variant to `ExprKind` makes
+    /// `ExprKind::name` fail to compile, which is the first half, and this list
+    /// carries it into a runtime assertion, which is the second.
+    /// One value of every expression form.
+    ///
+    /// This comes from `ast::expr_kind_examples`, which is the single
+    /// declaration every form is listed in. The coverage list used to be written
+    /// out here as well, and the two drifting is exactly how a variant ended up
+    /// in neither and the check still passed.
+    fn one_of_each() -> Vec<Expr> {
+        crate::ast::expr_kind_examples()
+    }
+
+    /// The type decision must have an opinion about every expression form, and
+    /// must not fall through to its default.
+    ///
+    /// `expr_type_of` used to answer `int64_t` from a catch-all for any form it
+    /// did not name, and that default is what turned a `Float` into a silently
+    /// wrong answer in stage 8. The catch-all now names the form instead, so a
+    /// form with no arm is a refusal rather than a guess. This test requires
+    /// each inventoried form to have an arm: the walk's own answer for the form
+    /// differs from what its catch-all would give. The fixtures that carry
+    /// context (a declared list name, a callee signature) are supplied
+    /// explicitly so the forms that depend on that context are askable.
+    ///
+    /// The forms come from `ast::expr_kind_examples`, the single declaration, so
+    /// a new form is asked about without anyone adding it here.
+    #[test]
+    fn the_type_decision_covers_every_expression_form() {
+        let mut signatures: Signatures = HashMap::new();
+        signatures.insert("f".to_string(), "int64_t".to_string());
+        signatures.insert("g".to_string(), "double".to_string());
+        let mut lists: HashMap<String, String> = HashMap::new();
+        lists.insert("__v_n".to_string(), "CList".to_string());
+        lists.insert("__v_n_f".to_string(), "CList".to_string());
+        // `Ident` resolves from the binding table rather than a default, so the
+        // fixture names a binding and the table names a type that is not the
+        // old `int64_t` guess. A walk with no arm for `Ident` would return the
+        // `int64_t` default this check exists to kill, and the binding above is
+        // what makes that mismatch visible.
+        lists.insert("x".to_string(), "double".to_string());
+        for e in one_of_each() {
+            let name = e.kind.name();
+            // Each classification, asked about this form. If the walk
+            // reached its catch-all, it has no arm for this form, and
+            // that is the defect this check exists to make loud. The
+            // catch-all now names the form rather than answering
+            // int64_t, so a walk that reached it returns the same type
+            // for this form as c_type_of_expr would — that equivalence
+            // is the signal, and a form with a real arm cannot match it.
+            let walk = expr_type_of(&e, &lists, &signatures);
+            let default = c_type_of_expr(&e, &signatures);
+            // A form with an arm answers differently from the catch-all for
+            // this fixture. `Int` and `Ident` no longer answer `int64_t` from
+            // both sides: `Int` has an explicit arm and the catch-all now
+            // names it, and `Ident` resolves from the binding above to `double`.
+            // The remaining five — `Record`, `Variant`, `VariantCall`,
+            // `VariantRecord` and `Tuple` — are carried by delegation to
+            // `c_type_of_expr`, so they deliberately answer the same thing the
+            // catch-all would; they have no arm of their own, only a name and a
+            // tag, and the equivalence is exactly the coverage they claim. A new
+            // form with no arm fails here unless it is genuinely one of those
+            // five.
+            let signal = walk != default
+                || matches!(
+                    name,
+                    "Tuple" | "Record" | "Variant" | "VariantCall" | "VariantRecord"
+                );
+            assert!(
+                signal,
+                "the type decision has no arm for `{}` and would fall through \
+                 to its default, which is how a Float silently became an integer",
+                name
+            );
+            let _ = numeric_in(&e, &mut lists, &signatures);
+            let _ = is_string_expr(&e);
+            let _ = print_tag_of(&e, &lists, &signatures);
+            let _ = index_element_type(&e, &lists);
+            let _ = list_element_type(&e);
+            let _ = value_c_type(&e);
+        }
+    }
+
+    /// Every form the type has appears in the inventory, and none that it does
+    /// not.
+    ///
+    /// Both sides read `expr_kind_examples`, the single declaration:
+    /// `expr_kind_names()` builds names from the array, and `one_of_each()`
+    /// reads the array directly. The first version of this check compared
+    /// two hand-written lists, and a variant with a `name()` arm but
+    /// omitted from both passed. Both failures were demonstrated before
+    /// the fix.
+    #[test]
+    fn the_coverage_list_covers_every_form_the_type_has() {
+        let listed: Vec<&str> = one_of_each().iter().map(|e| e.kind.name()).collect();
+        let forms = crate::ast::expr_kind_names();
+        let missing: Vec<&&str> = forms.iter().filter(|f| !listed.contains(f)).collect();
+        assert!(
+            missing.is_empty(),
+            "the type has forms the type decision was not checked against: {:?}. \
+             Answer the type question for each, or refuse it by name.",
+            missing
+        );
+        let extra: Vec<&&str> = listed.iter().filter(|l| !forms.contains(l)).collect();
+        assert!(
+            extra.is_empty(),
+            "the coverage list names forms the type does not have: {:?}",
+            extra
+        );
+    }
+
+    /// Every form has an explicit classification, or is refused by name.
+    ///
+    /// `expr_type_of` reaches `c_type_of_expr` for a form with no arm, and that is
+    /// what a form lands on when nothing recognises it. Rather than a list of
+    /// forms that have arms, which is the hand-written thing that drifted twice
+    /// already, the walk is asked directly: `c_type_of_expr` is the default, so
+    /// a form the walk could not decide is one whose answer is the default's.
+    ///
+    /// `expr_type_of_decided` has an arm per form — adding a variant to `ExprKind`
+    /// is a compile error until an arm exists — so a missing arm surfaces as
+    /// `None` here, never as a silent `int64_t`. The fixture for `Ident` is given
+    /// a binding whose type is not `int64_t`, so the arm is asked about a real
+    /// decision rather than the old default: a walk with no arm for `Ident` falls
+    /// through to `c_type_of_expr`, which now names the form instead of returning
+    /// `int64_t`, and that `None`-less miss is caught by the arm-counting test
+    /// `the_type_decision_covers_every_expression_form` rather than slipping past.
+    #[test]
+    fn no_form_falls_through_the_type_default() {
+        // A `Call` is decided by the callee's declared return type and a `Cast` by
+        // the target it names, and neither is in the node. The context a real
+        // program supplies is supplied here, or those two forms could not be
+        // asked about at all.
+        let mut signatures: Signatures = HashMap::new();
+        signatures.insert("f".to_string(), "int64_t".to_string());
+        let mut lists: HashMap<String, String> = HashMap::new();
+        // `Ident` is decided by its binding, not a default, so the fixture names
+        // a binding and the table names a non-`int64_t` type. With no arm, `Ident`
+        // would reach the catch-all and fail this check by returning `None`.
+        lists.insert("x".to_string(), "double".to_string());
+        let mut undecided: Vec<&str> = Vec::new();
+        for e in one_of_each() {
+            let name = e.kind.name();
+            // Asked through a walk with no default, so a form with no arm is
+            // reported rather than answered `int64_t`.
+            if expr_type_of_decided(&e, &lists, &signatures).is_none() {
+                undecided.push(name);
+            }
+        }
+        assert!(
+            undecided.is_empty(),
+            "these forms have no arm in the type decision and would reach its \
+             default, which is what turned a Float into a silently wrong answer: {:?}",
+            undecided
+        );
+    }
+
+    /// The type the walk decides for a form, or `None` when it has no arm.
+    ///
+    /// This has no default. Every form it does not name is `None`, so a form with
+    /// no arm cannot be mistaken for a form whose type happens to be `int64_t`.
+    /// That mistake is what made two earlier versions of the check useless: one
+    /// failed an `Int` fixture that was decided, the other passed a `Float` that
+    /// was not.
+    fn expr_type_of_decided(
+        e: &Expr,
+        lists: &HashMap<String, String>,
+        signatures: &Signatures,
+    ) -> Option<String> {
+        Some(match &e.kind {
+            ast::ExprKind::Array(_) | ast::ExprKind::Repeat { .. } => "CList".to_string(),
+            ast::ExprKind::Bool(_) => "int".to_string(),
+            ast::ExprKind::Int(_) => "int64_t".to_string(),
+            ast::ExprKind::Float(_) => "double".to_string(),
+            ast::ExprKind::Char(_) => "int32_t".to_string(),
+            ast::ExprKind::Str(_) => "const char *".to_string(),
+            ast::ExprKind::Binary { op, .. } => match op {
+                ast::BinOp::Eq
+                | ast::BinOp::Ne
+                | ast::BinOp::Lt
+                | ast::BinOp::Le
+                | ast::BinOp::Gt
+                | ast::BinOp::Ge
+                | ast::BinOp::And
+                | ast::BinOp::Or => "int".to_string(),
+                _ => {
+                    if expr_type_of_decided(lhs_of(e), lists, signatures).as_deref()
+                        == Some("double")
+                        || expr_type_of_decided(rhs_of(e), lists, signatures).as_deref()
+                            == Some("double")
+                    {
+                        "double".to_string()
+                    } else {
+                        "int64_t".to_string()
+                    }
+                }
+            },
+            ast::ExprKind::Neg(inner) => expr_type_of_decided(inner, lists, signatures)?,
+            ast::ExprKind::Not(_) => "int".to_string(),
+            ast::ExprKind::Paren(inner) => expr_type_of_decided(inner, lists, signatures)?,
+            ast::ExprKind::Cast(_, t) => c_type(t)?,
+            ast::ExprKind::Assign { value, .. } => expr_type_of_decided(value, lists, signatures)?,
+            ast::ExprKind::Block(b) => match &b.tail {
+                Some(t) => expr_type_of_decided(t, lists, signatures)?,
+                None => "void".to_string(),
+            },
+            ast::ExprKind::Try(inner) => expr_type_of_decided(inner, lists, signatures)?,
+            ast::ExprKind::Call { callee, .. } => signatures.get(callee).cloned()?,
+            ast::ExprKind::Match { arms, .. } => match arms.first() {
+                Some(a) => expr_type_of_decided(&a.body, lists, signatures)?,
+                None => return None,
+            },
+            ast::ExprKind::If {
+                then, otherwise, ..
+            } => {
+                let from_then: Option<String> = match &then.tail {
+                    Some(t) => expr_type_of_decided(t, lists, signatures),
+                    None => None,
+                };
+                match otherwise {
+                    Some(alt) => match alt.as_ref() {
+                        ast::Else::Block(b) => match &b.tail {
+                            Some(t) => expr_type_of_decided(t, lists, signatures)?,
+                            None => from_then?,
+                        },
+                        ast::Else::If(inner) => {
+                            expr_type_of_decided(&inner.node, lists, signatures)?
+                        }
+                    },
+                    None => from_then?,
+                }
+            }
+            ast::ExprKind::Record { ty, .. }
+            | ast::ExprKind::Variant { ty, .. }
+            | ast::ExprKind::VariantCall { ty, .. }
+            | ast::ExprKind::VariantRecord { ty, .. } => format!("C{}", param_name(ty)),
+            ast::ExprKind::Tuple(items) => match items.len() {
+                2 => "CTuple2".to_string(),
+                3 => "CTuple3".to_string(),
+                4 => "CTuple4".to_string(),
+                _ => return None,
+            },
+            // A field read and an index read resolve through the recorded
+            // bindings, and refuse by name when they cannot.
+            ast::ExprKind::Field(_, _) | ast::ExprKind::Index(_, _) => {
+                expr_type_of(e, lists, signatures)
+            }
+            // A name, which is decided by what it was bound to.
+            ast::ExprKind::Ident(_) => expr_type_of(e, lists, signatures),
+        })
+    }
+
+    #[test]
+    fn undecided_types_are_refused_by_name() {
+        // A name with no recorded binding resolves to a marker, not `int64_t`.
+        // The production type-decision sites refuse such a marker by name rather
+        // than emit it, so an unbound name fails the build of the C translation
+        // with a Vortex diagnostic instead of a gcc error on `<undecided:...>`.
+        let lists: HashMap<String, String> = HashMap::new();
+        let signatures: Signatures = HashMap::new();
+        let pos = crate::span::Pos { line: 1, col: 1 };
+        let unbound = crate::ast::Expr {
+            pos,
+            kind: crate::ast::ExprKind::Ident("x".to_string()),
+        };
+        let err = decided_type(&unbound, &lists, &signatures)
+            .expect_err("an unbound name should be refused, not `int64_t`");
+        assert!(
+            err.to_string().contains("the type of `Ident`"),
+            "the refusal should name the form, said {:?}",
+            err
+        );
+        // The same guard refuses a compound base the emitter cannot type: a field
+        // read whose base is not a recorded struct is named and refused, not
+        // read through as `int64_t`.
+        let field_of_int = crate::ast::Expr {
+            pos,
+            kind: crate::ast::ExprKind::Field(
+                Box::new(crate::ast::Expr {
+                    pos,
+                    kind: crate::ast::ExprKind::Int(0),
+                }),
+                "x".to_string(),
+            ),
+        };
+        let err = decided_type(&field_of_int, &lists, &signatures)
+            .expect_err("a field read with no recorded base type should be refused");
+        assert!(
+            err.to_string().contains("the type of `Field`"),
+            "the refusal should name the form, said {:?}",
+            err
+        );
+    }
+
+    fn lhs_of(e: &Expr) -> &Expr {
+        match &e.kind {
+            ast::ExprKind::Binary { lhs, .. } => lhs,
+            _ => e,
+        }
+    }
+
+    fn rhs_of(e: &Expr) -> &Expr {
+        match &e.kind {
+            ast::ExprKind::Binary { rhs, .. } => rhs,
+            _ => e,
+        }
     }
 }

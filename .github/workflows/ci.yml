@@ -34,6 +34,12 @@ jobs:
       - name: Run the test suite
         run: cargo test --workspace
 
+      - name: Check the emitter's type decision covers every expression form
+        # Stage 15: a form with no arm in the type decision is what nine of the
+        # documented defects were, and two of them arrived through fixing another.
+        # This fails the build when a form is unhandled, at the point of change.
+        run: cargo test -p vortexc --lib coverage
+
       - name: Run the interpreter suite against the VM
         # The stage 2 and 3 expectations are run a second time against the
         # virtual machine, so both engines are checked against the same

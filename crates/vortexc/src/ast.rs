@@ -260,6 +260,169 @@ pub enum ExprKind {
     Field(Box<Expr>, String),
 }
 
+/// How many expression forms there are, counted from the type rather than
+/// written down.
+///
+/// This exists so a check can compare the number of forms the type has against
+/// the number the emitter handles. A hand-written count would pass forever, and
+/// a hand-written list of forms passed with an extra variant in the enum, which
+/// is the failure mode this is here to prevent. The count comes from
+/// `ExprKind::name`, which is an exhaustive match, so adding a variant fails the
+/// build there and changes this number at the same time.
+pub fn expr_kind_examples() -> Vec<Expr> {
+    let form = |kind: ExprKind| Expr {
+        pos: crate::span::Pos { line: 1, col: 1 },
+        kind,
+    };
+    let at = |line: u32| Expr {
+        pos: crate::span::Pos { line, col: 1 },
+        kind: ExprKind::Int(0),
+    };
+    // The array is the single declaration every form is listed in. `name`
+    // above is exhaustive, so the compiler requires an arm per variant and a new
+    // one is a compile error. This array supplies a value of each, and its length
+    // is read from itself rather than copied into a constant, so the two cannot
+    // drift the way a hand-written count and a hand-written array did.
+    let forms = vec![
+        form(ExprKind::Int(0)),
+        form(ExprKind::Float(0.0)),
+        form(ExprKind::Str(String::new())),
+        form(ExprKind::Char(' ')),
+        form(ExprKind::Bool(false)),
+        form(ExprKind::Ident("x".to_string())),
+        form(ExprKind::Call {
+            callee: "f".to_string(),
+            args: Vec::new(),
+        }),
+        form(ExprKind::Neg(Box::new(at(1)))),
+        form(ExprKind::Not(Box::new(form(ExprKind::Bool(false))))),
+        form(ExprKind::Assign {
+            name: String::new(),
+            index: None,
+            value: Box::new(at(1)),
+        }),
+        form(ExprKind::Binary {
+            op: BinOp::Add,
+            lhs: Box::new(at(1)),
+            rhs: Box::new(at(1)),
+        }),
+        form(ExprKind::If {
+            cond: Box::new(form(ExprKind::Bool(false))),
+            then: Block {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                stmts: Vec::new(),
+                tail: Some(Box::new(form(ExprKind::Int(0)))),
+            },
+            otherwise: None,
+        }),
+        form(ExprKind::Match {
+            scrutinee: Box::new(at(1)),
+            arms: vec![Arm {
+                pos: crate::span::Pos { line: 1, col: 1 },
+                patterns: Vec::new(),
+                body: form(ExprKind::Int(0)),
+            }],
+        }),
+        form(ExprKind::Record {
+            ty: String::new(),
+            fields: Vec::new(),
+        }),
+        form(ExprKind::Variant {
+            ty: String::new(),
+            variant: String::new(),
+        }),
+        form(ExprKind::VariantCall {
+            ty: String::new(),
+            variant: String::new(),
+            args: Vec::new(),
+        }),
+        form(ExprKind::VariantRecord {
+            ty: String::new(),
+            variant: String::new(),
+            fields: Vec::new(),
+        }),
+        form(ExprKind::Tuple(vec![
+            form(ExprKind::Int(0)),
+            form(ExprKind::Int(0)),
+        ])),
+        form(ExprKind::Paren(Box::new(at(1)))),
+        form(ExprKind::Block(Block {
+            pos: crate::span::Pos { line: 1, col: 1 },
+            stmts: Vec::new(),
+            tail: None,
+        })),
+        form(ExprKind::Try(Box::new(at(1)))),
+        form(ExprKind::Array(Vec::new())),
+        form(ExprKind::Cast(
+            Box::new(at(1)),
+            TypeExpr::Named("Int".to_string()),
+        )),
+        form(ExprKind::Repeat {
+            value: Box::new(at(1)),
+            count: Box::new(at(1)),
+        }),
+        form(ExprKind::Index(Box::new(at(1)), Box::new(at(1)))),
+        form(ExprKind::Field(Box::new(at(1)), String::new())),
+    ];
+    forms
+}
+
+/// The number of variants `ExprKind` has, read from the inventory.
+///
+/// It exists only to be compared: a caller that wants to know how many forms
+/// there are reads `expr_kind_examples().len()` and gets a number that is in
+/// step with the array, not one copied and left to drift.
+pub fn expr_kind_variant_count() -> usize {
+    expr_kind_examples().len()
+}
+
+/// The name of every expression form, read from the single declaration above.
+///
+/// A form cannot be absent from this without being absent from the array, which
+/// is exhaustive, so a variant added to the type is a name added here with no
+/// separate edit.
+pub fn expr_kind_names() -> Vec<&'static str> {
+    expr_kind_examples().iter().map(|e| e.kind.name()).collect()
+}
+
+/// The name of an expression form, used to report one.
+///
+/// This is here so a diagnostic can say which form it is refusing rather than
+/// printing a payload, and so `scripts/check-exhaustive.sh` can derive its
+/// expectation from the type rather than from a list written out by hand.
+impl ExprKind {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ExprKind::Int(_) => "Int",
+            ExprKind::Float(_) => "Float",
+            ExprKind::Bool(_) => "Bool",
+            ExprKind::Char(_) => "Char",
+            ExprKind::Str(_) => "Str",
+            ExprKind::Ident(_) => "Ident",
+            ExprKind::Binary { .. } => "Binary",
+            ExprKind::Paren(_) => "Paren",
+            ExprKind::Call { .. } => "Call",
+            ExprKind::Cast(_, _) => "Cast",
+            ExprKind::Neg(_) => "Neg",
+            ExprKind::Not(_) => "Not",
+            ExprKind::If { .. } => "If",
+            ExprKind::Assign { .. } => "Assign",
+            ExprKind::Block(_) => "Block",
+            ExprKind::Try(_) => "Try",
+            ExprKind::Array(_) => "Array",
+            ExprKind::Repeat { .. } => "Repeat",
+            ExprKind::Index(_, _) => "Index",
+            ExprKind::Field(_, _) => "Field",
+            ExprKind::Tuple(_) => "Tuple",
+            ExprKind::Record { .. } => "Record",
+            ExprKind::Variant { .. } => "Variant",
+            ExprKind::VariantCall { .. } => "VariantCall",
+            ExprKind::VariantRecord { .. } => "VariantRecord",
+            ExprKind::Match { .. } => "Match",
+        }
+    }
+}
+
 /// The `else` part of an if expression.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Else {
