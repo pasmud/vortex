@@ -297,8 +297,10 @@ impl Expr {
 /// the tree interpreter exactly: integers wrap, floats are real arithmetic.
 ///
 /// Returns `None` for a type mismatch such as `Str + Int`, and for a division or
-/// remainder whose divisor is zero. The runtime raises `DivideByZero` for those,
-/// so the compiler must not pretend to know a result it would never compute.
+/// remainder whose divisor is zero. Integer division or remainder by zero is
+/// left to the runtime, which raises `DivideByZero`; float division by zero is
+/// left to the runtime as well, which under `f64` yields infinity or NaN. The
+/// fold must not pretend to know a result the runtime decides differently.
 fn fold_binary(op: ast::BinOp, l: Const, r: Const) -> Option<Const> {
     use ast::BinOp::*;
     use Const::*;

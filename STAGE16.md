@@ -13,9 +13,11 @@ calls it on every `Binary` and `Unary` node; a `Some` result replaces the whole
 subtree with one `Const`, a `None` result compiles the operands and opcode as
 before. The arithmetic matches the tree interpreter (`interp.rs`) exactly:
 `Int` adds, subtracts, multiplies and divides with Rust's wrapping integers,
-`Float` uses real `f64` arithmetic, and a division or remainder whose divisor
-is zero is left unfolded so the runtime keeps raising `DivideByZero` instead of
-the compiler inventing a result. Only operands that are both constants fold, so
+`Float` uses real `f64` arithmetic, and a division or remainder whose divisor is
+zero is left unfolded. Integer division or remainder by zero is left to the
+runtime, which raises `DivideByZero`; float division by zero is left to the
+runtime too, which under `f64` yields infinity or NaN, so the compiler does not
+invent a result either way. Only operands that are both constants fold, so
 `2 + 3 * 4` compiles to `Const(14)` (the multiply folds first, then the add)
 while `a + 1` keeps its `Add` opcode. The test
 `bytecode::tests::constant_arithmetic_is_folded_to_a_const` asserts the folded
