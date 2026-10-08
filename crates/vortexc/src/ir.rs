@@ -261,6 +261,59 @@ impl Expr {
             Expr::BlockValue(b) => b.pos,
         }
     }
+
+    /// A constant value this expression reduces to at compile time, if it is
+    /// built entirely from literals.
+    ///
+    /// The bytecode compiler folds a constant `Binary` or unary negation into a
+    /// single `Const`, so `2 + 3 * 4` becomes `Const(14)` instead of two loads, a
+    /// multiply and an add. Only arithmetic the tree interpreter also treats as
+    /// pure is folded: the two arithmetic rules stay in step with each other.
+    pub fn const_value(&self) -> Option<Const> {
+        match self {
+            Expr::Const { value, .. } => Some(value.clone()),
+            // `not` is folded nowhere: the runtime owns it, so the fold must not
+            // disagree with it. Arithmetic negation is folded because `2 + -3*4`
+            // then starts from constants the same way the interpreter would.
+            Expr::Unary { neg, operand, .. } => {
+                let v = operand.const_value()?;
+                Some(match (neg, v) {
+                    (true, Const::Int(n)) => Const::Int(n.wrapping_neg()),
+                    (true, Const::Float(n)) => Const::Float(-n),
+                    _ => return None,
+                })
+            }
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let l = lhs.const_value()?;
+                let r = rhs.const_value()?;
+                fold_binary(*op, l, r)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Applies a binary operator to two constant values, the arithmetic matching
+/// the tree interpreter exactly: integers wrap, floats are real arithmetic.
+///
+/// Returns `None` for a type mismatch such as `Str + Int`, and for a division or
+/// remainder whose divisor is zero. The runtime raises `DivideByZero` for those,
+/// so the compiler must not pretend to know a result it would never compute.
+fn fold_binary(op: ast::BinOp, l: Const, r: Const) -> Option<Const> {
+    use ast::BinOp::*;
+    use Const::*;
+    match (op, &l, &r) {
+        (Add, Int(a), Int(b)) => Some(Int(a.wrapping_add(*b))),
+        (Sub, Int(a), Int(b)) => Some(Int(a.wrapping_sub(*b))),
+        (Mul, Int(a), Int(b)) => Some(Int(a.wrapping_mul(*b))),
+        (Div, Int(a), Int(b)) if *b != 0 => Some(Int(a.wrapping_div(*b))),
+        (Rem, Int(a), Int(b)) if *b != 0 => Some(Int(a.wrapping_rem(*b))),
+        (Add, Float(a), Float(b)) => Some(Float(a + b)),
+        (Sub, Float(a), Float(b)) => Some(Float(a - b)),
+        (Mul, Float(a), Float(b)) => Some(Float(a * b)),
+        (Div, Float(a), Float(b)) if *b != 0.0 => Some(Float(a / b)),
+        _ => None,
+    }
 }
 
 /// What a call refers to, decided at lowering time.

@@ -561,13 +561,25 @@ impl FnCompiler {
                 self.emit(Op::Store(*slot), pos);
             }
             ir::Expr::Unary { neg, operand, .. } => {
-                self.expr(operand)?;
-                self.emit(Op::Unary { neg: *neg }, pos);
+                // A constant operand is folded to `Const(neg(value))` so the VM
+                // never runs an arithmetic instruction to negate a literal.
+                if let Some(v) = e.const_value() {
+                    self.emit(Op::Const(v), pos);
+                } else {
+                    self.expr(operand)?;
+                    self.emit(Op::Unary { neg: *neg }, pos);
+                }
             }
             ir::Expr::Binary { op, lhs, rhs, .. } => {
-                self.expr(lhs)?;
-                self.expr(rhs)?;
-                self.emit(Op::Binary(*op), pos);
+                // Two constant operands compute to one `Const`, so `2 + 3 * 4`
+                // compiles to `Const(14)` instead of a load, a multiply and an add.
+                if let Some(v) = e.const_value() {
+                    self.emit(Op::Const(v), pos);
+                } else {
+                    self.expr(lhs)?;
+                    self.expr(rhs)?;
+                    self.emit(Op::Binary(*op), pos);
+                }
             }
             ir::Expr::List { items, tuple, .. } => {
                 self.emit(Op::ListLen(items.len()), pos);
@@ -839,7 +851,116 @@ pub fn disassemble_program(program: &Program) -> String {
     let mut out = String::new();
     for code in &program.code {
         out.push_str(&disassemble(code));
-        out.push('\n');
+        out.push_str("\n");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir;
+
+    /// Constant folding is observed where the supervisor asked for it: a
+    /// constant arithmetic expression compiles to a single `Const` holding the
+    /// result, with no `Binary` instruction for the operands or the operator.
+    /// `2 + 3 * 4` is `14`: the multiply folds first, then the add.
+    #[test]
+    fn constant_arithmetic_is_folded_to_a_const() {
+        let p = Pos::START;
+        let prog = ir::Program {
+            items: vec![ir::Item::Function(ir::Fn {
+                name: "fold".to_string(),
+                params: Vec::new(),
+                ret: None,
+                body: ir::Block {
+                    pos: p,
+                    stmts: Vec::new(),
+                    tail: Some(Box::new(ir::Expr::Binary {
+                        op: ast::BinOp::Add,
+                        lhs: Box::new(ir::Expr::Const {
+                            value: ir::Const::Int(2),
+                            pos: p,
+                        }),
+                        rhs: Box::new(ir::Expr::Binary {
+                            op: ast::BinOp::Mul,
+                            lhs: Box::new(ir::Expr::Const {
+                                value: ir::Const::Int(3),
+                                pos: p,
+                            }),
+                            rhs: Box::new(ir::Expr::Const {
+                                value: ir::Const::Int(4),
+                                pos: p,
+                            }),
+                            pos: p,
+                        }),
+                        pos: p,
+                    })),
+                },
+                frame_size: 0,
+                pos: p,
+            })],
+        };
+
+        let code = compile(&prog).expect("compiling a constant expression");
+        let instrs = &code.code[0].instrs;
+
+        assert!(
+            instrs
+                .iter()
+                .all(|i| !matches!(i.op, Op::Binary(_) | Op::Unary { .. })),
+            "no arithmetic opcodes should remain: {:?}",
+            instrs
+        );
+        assert_eq!(
+            instrs[0].op,
+            Op::Const(ir::Const::Int(14)),
+            "the whole expression should fold to Const(14): {:?}",
+            instrs
+        );
+    }
+
+    /// An operand that is not a constant defeats the fold, so the real
+    /// `Binary` instruction survives and the expression is not miscomputed.
+    #[test]
+    fn a_nonconstant_operand_is_not_folded() {
+        let p = Pos::START;
+        let prog = ir::Program {
+            items: vec![ir::Item::Function(ir::Fn {
+                name: "mixed".to_string(),
+                params: vec![ir::Param {
+                    slot: 0,
+                    name: "a".to_string(),
+                    mutable: false,
+                    ty: crate::ast::TypeExpr::Named("Int".to_string()),
+                }],
+                ret: None,
+                body: ir::Block {
+                    pos: p,
+                    stmts: Vec::new(),
+                    tail: Some(Box::new(ir::Expr::Binary {
+                        op: ast::BinOp::Add,
+                        lhs: Box::new(ir::Expr::Load { slot: 0, pos: p }),
+                        rhs: Box::new(ir::Expr::Const {
+                            value: ir::Const::Int(1),
+                            pos: p,
+                        }),
+                        pos: p,
+                    })),
+                },
+                frame_size: 1,
+                pos: p,
+            })],
+        };
+
+        let code = compile(&prog).expect("compiling a mixed expression");
+        let instrs = &code.code[0].instrs;
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(i.op, Op::Binary(ast::BinOp::Add))),
+            "a non-constant operand must leave the Add opcode in place: {:?}",
+            instrs
+        );
+    }
 }
