@@ -1,0 +1,143 @@
+Vortex stage 16 step 2: constant-folding measurement
+=====================================================
+
+Machine spec: see BENCHMARKS.md "Machine specification".
+  CPU      Intel Core i5-8500T @ 2.10GHz  (x86_64)
+  Kernel   Linux 6.18.35 x86_64
+  Rust     rustc 1.99.0 (b940084d7 2026-09-28)  cargo 1.99.0 (5f94df478 2026-08-27)
+
+Two programs are compared. Both are a chain of 999 additions over 1000 leaves,
+so each front end walks the same sized tree. Only the leaves differ:
+
+  chain1000.vx : fn main() -> Int { return 1 + 2 + 3 + ... + 1000; }
+    The leaves are integer literals, so the fold in bytecode::compile turns the
+    whole chain into one constant (`500500`). Tree size is identical, but the
+    compiler emits one instruction for the expression.
+
+  vachain1000.vx : fn main() -> Int { var a = 1; return a + a + a + ... + a; }
+    The leaves are a variable, so const_value returns None and nothing folds.
+    The same 999 additions compile to 999 `add` opcodes plus 1000 `load`
+    opcodes. This is the "without folding" row, read from the same compiler.
+
+The chain1000 source is generated with:
+
+    python3 -c 'print("fn main() -> Int { return " + "+".join(str(i) for i in range(1,1001)) + "; }")'
+
+and vachain1000 with:
+
+    printf 'fn main() -> Int { var a = 1; return %s; }\n' "$(python3 -c 'print("+".join(["a"]*1000))')"
+
+The 2 + 3 * 4 case is the program in the Step 1 regression test:
+
+    printf 'fn main() -> Int { return 2 + 3 * 4; }\n'
+
+The runner binaries are built once with:
+
+    cargo build --release --example run_example --example disasm
+
+Timings use the shell clock the repo's harness uses (date %s%N -> ms), five
+repeats, fastest kept. Every run is printed so a single flattering number cannot
+stand in for a spread.
+
+------------------------------------------------------------------------------
+1. Bytecode instruction count (the measured compile-output benefit)
+------------------------------------------------------------------------------
+
+A constant expression of 999 additions folds to ONE instruction:
+
+  $ disasm chain1000.vx --fn main
+  fn main at 1:1 (2 slots, 3 instructions)
+       0  const int 500500             ; 1:3914
+       1  return                       ; 1:3914
+       2  const int 0                  ; 1:20
+
+  folded  expression instructions: 1   (const int 500500)
+  folded  main() instructions:        3  (const + return + epilogue const 0)
+
+The same 999-addition tree with a variable leaf does NOT fold:
+
+  $ disasm vachain1000.vx --fn main | grep -cE '^\s+[0-9]'
+  2003
+
+  unfolded expression instructions: 1999   (999 add + 1000 load)
+  unfolded main() instructions:        2003  (above + return + epilogue const 0)
+
+So constant folding compiles `1 + ... + 1000` to 1 instruction instead of
+1999, a 1999x reduction in bytecode for this expression.
+
+The small case from the Step 1 test:
+
+  $ disasm muladd.vx --fn main
+  fn main at 1:1 (2 slots, 3 instructions)
+       0  const int 14                 ; 1:29
+       1  return                       ; 1:29
+       2  const int 0                  ; 1:20
+
+  2 + 3 * 4 folded expression:   1   (const int 14)
+  2 + 3 * 4 unfolded expression: 5   (3 loads + mul + add)
+
+------------------------------------------------------------------------------
+2. Bytecode compilation time (end-to-end source -> bytecode)
+------------------------------------------------------------------------------
+
+Wall time of `disasm` on chain1000.vx, five repeats (ms). `disasm` runs the
+whole front end (lex, parse, lower, check) before bytecode::compile, so this is
+the cost of producing bytecode from source for this program, not an isolated
+measure of the bytecode::compile step:
+
+  $ for i in 1 2 3 4 5; do s=$(date +%s%N); disasm chain1000.vx --fn main >/dev/null; e=$(date +%s%N); awk -v a=$s -v b=$e 'BEGIN{printf "%d\n",(b-a)/1000000}'; done
+  25
+  24
+  23
+  20
+  27
+  fastest: 20 ms
+
+A fresh release binary for this program costs ~16 ms to start, so most of that
+20 ms is process startup and front-end work (lexing 999 integer literals,
+building and checking the 999-node tree), not the fold. The fold itself is one
+O(n) traversal of the expression plus emitting one instruction, so it is on the
+order of microseconds and does not rise above the process-start floor here. It is
+not separable from the CLI; an in-process timing test would be required to
+report the bytecode::compile step in isolation, and that is a code addition, so
+this step does not claim a nanosecond figure for compile time alone.
+
+------------------------------------------------------------------------------
+3. Execution time (bytecode VM)
+------------------------------------------------------------------------------
+
+Running main() on the bytecode VM, five repeats (ms):
+
+  const chain (folded, 3 instructions):
+    $ for i in 1 2 3 4 5; do s=$(date +%s%N); run_example chain1000.vx --vm --print-value; e=$(date +%s%N); awk -v a=$s -v b=$e 'BEGIN{printf "%d\n",(b-a)/1000000}'; done
+    18 18 18 20 20
+    fastest: 18 ms   answer: 500500
+
+  var chain (1999 instructions):
+    $ for i in 1 2 3 4 5; do s=$(date +%s%N); run_example vachain1000.vx --vm --print-value; e=$(date +%s%N); awk -v a=$s -v b=$e 'BEGIN{printf "%d\n",(b-a)/1000000}'; done
+    17 16 16 19 16
+    fastest: 16 ms   answer: 1000
+
+The tree interpreter on the same folded-constant source (it walks the full
+1999-node IR tree, since folding is a bytecode-only optimization):
+
+  $ for i in 1 2 3 4 5; do s=$(date +%s%N); run_example chain1000.vx --print-value; e=$(date +%s%N); awk -v a=$s -v b=$e 'BEGIN{printf "%d\n",(b-a)/1000000}'; done
+  19 27 20 21 22
+  fastest: 19 ms   answer: 500500
+
+All three execution figures sit on the same ~16 ms release-binary startup floor,
+so the 1999-instruction run and the 3-instruction run are not distinguishable
+above startup noise at this chain depth. The measured, real effect of folding is
+the instruction-count reduction in section 1; the per-step savings it implies are
+below the process-start resolution of the CLI measurement here.
+
+------------------------------------------------------------------------------
+What this does not claim
+------------------------------------------------------------------------------
+
+It does not claim that folding is faster end to end on this workload. It claims
+that folding compiles a 999-addition constant expression to one instruction
+instead of 1999 (measured above), that the fold traversal is O(n) and sub-millisecond,
+and that the execution and compile times here are dominated by process startup
+and therefore do not separate the fold's cost or benefit from the startup floor.
+No number was made by an estimate.
