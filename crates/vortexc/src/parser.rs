@@ -164,10 +164,24 @@ impl<'a> Parser<'a> {
 
     fn program(&mut self) -> Result<Program, ParseError> {
         let mut items = Vec::new();
+        let mut traits = Vec::new();
+        let mut impls = Vec::new();
         while !self.at(&Tok::Eof) {
+            if self.at_keyword("trait") {
+                traits.push(self.trait_decl()?);
+                continue;
+            }
+            if self.at_keyword("impl") {
+                impls.push(self.impl_decl()?);
+                continue;
+            }
             items.push(self.item()?);
         }
-        Ok(Program { items })
+        Ok(Program {
+            items,
+            traits,
+            impls,
+        })
     }
 
     fn item(&mut self) -> Result<Item, ParseError> {
@@ -182,28 +196,97 @@ impl<'a> Parser<'a> {
             return Ok(Item::Enum(Spanned::new(self.enum_decl()?, pos)));
         }
         let found = self.peek().describe();
-        self.fail(pos, "an item: `fn`, `struct` or `enum`", &found)
+        self.fail(
+            pos,
+            "an item: `fn`, `struct`, `enum`, `trait` or `impl`",
+            &found,
+        )
     }
 
     fn fn_decl(&mut self) -> Result<FnDecl, ParseError> {
         self.advance();
         let name = self.expect_ident("a function name")?;
-        self.expect(Tok::LParen)?;
+        let generics = self.generics()?;
+        let params = self.param_list()?;
+        let ret = if self.eat(&Tok::Arrow) {
+            Some(self.type_expr()?)
+        } else {
+            None
+        };
+        let body = self.block()?;
+        Ok(FnDecl {
+            name,
+            generics,
+            params,
+            ret,
+            body,
+        })
+    }
 
+    /// Parses a generic parameter list `<T, U: Trait>`, returning the empty list
+    /// when there is none.
+    fn generics(&mut self) -> Result<Vec<GenericParam>, ParseError> {
+        let mut params = Vec::new();
+        if self.eat(&Tok::Lt) {
+            loop {
+                let pos = self.pos();
+                let name = self.expect_ident("a generic parameter name")?;
+                let mut bounds = Vec::new();
+                if self.eat(&Tok::Colon) {
+                    loop {
+                        bounds.push(self.expect_ident("a trait name in a bound")?);
+                        if !self.eat(&Tok::Plus) {
+                            break;
+                        }
+                    }
+                }
+                params.push(GenericParam { name, bounds, pos });
+                if self.eat(&Tok::Comma) {
+                    if self.at(&Tok::Gt) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            self.expect(Tok::Gt)?;
+        }
+        Ok(params)
+    }
+
+    /// Parses `(p, self, x: Int, ...)`, allowing `self` as a parameter name with
+    /// an implicit `Self` receiver type and no type annotation.
+    fn param_list(&mut self) -> Result<Vec<Param>, ParseError> {
+        self.expect(Tok::LParen)?;
         let mut params = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {
-                // `var` before the parameter name makes it mutable. See
-                // `SPEC.md` section 8.
-                let mutable = self.eat(&Tok::Ident("var"));
-                let pname = self.expect_ident("a parameter name")?;
-                self.expect(Tok::Colon)?;
-                let ty = self.type_expr()?;
-                params.push(Param {
-                    name: pname,
-                    ty,
-                    mutable,
-                });
+                let (mutable, name, ty) = if self.eat(&Tok::Amp) && self.at_keyword("self") {
+                    // `&self` is a borrowed receiver; typed as `Self`.
+                    self.advance();
+                    (
+                        false,
+                        "self".to_string(),
+                        TypeExpr::Named("Self".to_string()),
+                    )
+                } else if self.at_keyword("self") {
+                    // `self` is a reserved word, so it is accepted as a parameter
+                    // name only here, where it is the method receiver and carries
+                    // no type annotation; it is typed as `Self`.
+                    self.advance();
+                    (
+                        false,
+                        "self".to_string(),
+                        TypeExpr::Named("Self".to_string()),
+                    )
+                } else {
+                    let mutable = self.eat(&Tok::Ident("var"));
+                    let name = self.expect_ident("a parameter name")?;
+                    self.expect(Tok::Colon)?;
+                    let ty = self.type_expr()?;
+                    (mutable, name, ty)
+                };
+                params.push(Param { name, ty, mutable });
                 if self.eat(&Tok::Comma) {
                     if self.at(&Tok::RParen) {
                         break;
@@ -214,20 +297,7 @@ impl<'a> Parser<'a> {
             }
             self.expect(Tok::RParen)?;
         }
-
-        let ret = if self.eat(&Tok::Arrow) {
-            Some(self.type_expr()?)
-        } else {
-            None
-        };
-
-        let body = self.block()?;
-        Ok(FnDecl {
-            name,
-            params,
-            ret,
-            body,
-        })
+        Ok(params)
     }
 
     fn type_expr(&mut self) -> Result<TypeExpr, ParseError> {
@@ -332,6 +402,93 @@ impl<'a> Parser<'a> {
             name: vname,
             payloads,
             named,
+            pos,
+        })
+    }
+
+    // --- traits and impls ------------------------------------------------
+    //
+    // `trait` and `impl` are collected on the program rather than as `Item`s, so
+    // the rest of the pipeline keeps matching `Item::Function`/`Struct`/`Enum`
+    // exhaustively. The monomorphisation pass consumes them into concrete
+    // functions.
+
+    fn trait_decl(&mut self) -> Result<TraitDecl, ParseError> {
+        let pos = self.pos();
+        self.advance();
+        let name = self.expect_ident("a trait name")?;
+        self.expect(Tok::LBrace)?;
+        let mut methods = Vec::new();
+        if !self.eat(&Tok::RBrace) {
+            loop {
+                methods.push(self.trait_method()?);
+                if self.at(&Tok::RBrace) {
+                    break;
+                }
+            }
+            self.expect(Tok::RBrace)?;
+        }
+        Ok(TraitDecl { name, methods, pos })
+    }
+
+    fn trait_method(&mut self) -> Result<TraitMethod, ParseError> {
+        let pos = self.pos();
+        if !self.at_keyword("fn") {
+            let found = self.peek().describe();
+            return self.fail(pos, "`fn` in a trait", &found);
+        }
+        self.advance();
+        let name = self.expect_ident("a method name")?;
+        let params = self.param_list()?;
+        let ret = if self.eat(&Tok::Arrow) {
+            Some(self.type_expr()?)
+        } else {
+            None
+        };
+        // A trait method is a signature; a body is not permitted in v0.1.
+        if self.at(&Tok::LBrace) {
+            return self.fail(pos, "`;` or `}` in a trait method", "a `{`");
+        }
+        let _ = self.eat(&Tok::Semicolon);
+        Ok(TraitMethod {
+            name,
+            params,
+            ret,
+            pos,
+        })
+    }
+
+    fn impl_decl(&mut self) -> Result<ImplDecl, ParseError> {
+        let pos = self.pos();
+        self.advance();
+        let first = self.type_expr()?;
+        let (trait_ty, self_ty) = if self.at_keyword("for") {
+            self.advance();
+            let self_ty = self.expect_ident("a type after `for`")?;
+            (Some(first.name().to_string()), self_ty)
+        } else {
+            (None, first.name().to_string())
+        };
+        self.expect(Tok::LBrace)?;
+        let mut methods = Vec::new();
+        if !self.eat(&Tok::RBrace) {
+            loop {
+                if self.at(&Tok::RBrace) {
+                    break;
+                }
+                if self.at_keyword("fn") {
+                    methods.push(self.fn_decl()?);
+                } else {
+                    let found = self.peek().describe();
+                    return self.fail(pos, "`fn` in an impl block", &found);
+                }
+            }
+            self.expect(Tok::RBrace)?;
+        }
+        Ok(ImplDecl {
+            trait_ty,
+            self_ty,
+            methods,
             pos,
         })
     }
@@ -709,20 +866,22 @@ impl<'a> Parser<'a> {
         };
 
         if self.at(&Tok::LParen) {
-            let ty = match ty {
-                Some(t) => t,
-                None => {
-                    return self.fail(pos, "a type name before a variant call", "this expression")
-                }
-            };
+            // `base.name(args)` desugars to a call with the receiver as the
+            // first argument. That single form covers enum-variant construction
+            // (`Shape.circle(1.5)`) and method-call syntax (`x.add_one()`); the
+            // monomorphisation pass rewrites an enum receiver back into a
+            // `VariantCall` and a trait method into a concrete call, so this form
+            // is all the parser emits and the rest of the pipeline is unchanged.
             self.advance();
             let args = self.call_args()?;
+            let mut call_args = Vec::with_capacity(1 + args.len());
+            call_args.push(base);
+            call_args.extend(args);
             return Ok(Expr::new(
                 pos,
-                ExprKind::VariantCall {
-                    ty,
-                    variant: name,
-                    args,
+                ExprKind::Call {
+                    callee: name,
+                    args: call_args,
                 },
             ));
         }

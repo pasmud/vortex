@@ -27,6 +27,10 @@ impl<T> Spanned<T> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub items: Vec<Item>,
+    /// Trait declarations: `trait Name { fn method(self) -> T; }`.
+    pub traits: Vec<TraitDecl>,
+    /// Trait and inherent impls: `impl Trait for Type { ... }` or `impl Type { ... }`.
+    pub impls: Vec<ImplDecl>,
 }
 
 /// A top level item.
@@ -41,9 +45,21 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub name: String,
+    /// The generic parameters, e.g. `T` in `fn id<T>(x: T) -> T`. Empty for a
+    /// non-generic function.
+    pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub ret: Option<TypeExpr>,
     pub body: Block,
+}
+
+/// A generic parameter, e.g. `T` or `T: Trait` in `fn f<T: Trait>()`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenericParam {
+    pub name: String,
+    /// Trait bounds the parameter must satisfy, e.g. `Trait` in `T: Trait`.
+    pub bounds: Vec<String>,
+    pub pos: Pos,
 }
 
 /// A parameter. `SPEC.md` section 8 says a parameter is immutable unless it is
@@ -53,6 +69,41 @@ pub struct Param {
     pub name: String,
     pub ty: TypeExpr,
     pub mutable: bool,
+}
+
+/// A method signature inside a trait body: `fn name(self, x: Int) -> Int`.
+///
+/// Unlike `FnDecl` it carries no body, because a trait declaration only states
+/// the contract a type must satisfy. The parameter named `self` has the
+/// `Self` receiver type; the monomorphisation pass substitutes it with the
+/// concrete type of each `impl`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitMethod {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub ret: Option<TypeExpr>,
+    pub pos: Pos,
+}
+
+/// A trait declaration: `trait Name { fn method(self) -> Int; ... }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitDecl {
+    pub name: String,
+    pub methods: Vec<TraitMethod>,
+    pub pos: Pos,
+}
+
+/// An `impl` block: `impl Trait for Type { ... }` or `impl Type { ... }`.
+///
+/// `trait_ty` is `Some` for a trait impl and `None` for an inherent impl.
+/// `self_ty` is the type the impl is written against; `Self` in a method
+/// signature resolves to it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImplDecl {
+    pub trait_ty: Option<String>,
+    pub self_ty: String,
+    pub methods: Vec<FnDecl>,
+    pub pos: Pos,
 }
 
 /// A type as written.
