@@ -866,14 +866,20 @@ impl<'a> Parser<'a> {
         };
 
         if self.at(&Tok::LParen) {
-            // `base.name(args)` desugars to a call with the receiver as the
-            // first argument. That single form covers enum-variant construction
-            // (`Shape.circle(1.5)`) and method-call syntax (`x.add_one()`); the
-            // monomorphisation pass rewrites an enum receiver back into a
-            // `VariantCall` and a trait method into a concrete call, so this form
-            // is all the parser emits and the rest of the pipeline is unchanged.
             self.advance();
             let args = self.call_args()?;
+            if let Some(ty) = ty {
+                // `Shape.variant(args)` is enum-variant construction.
+                return Ok(Expr::new(
+                    pos,
+                    ExprKind::VariantCall {
+                        ty,
+                        variant: name,
+                        args,
+                    },
+                ));
+            }
+            // `x.method(args)` is a method call; the receiver is the first arg.
             let mut call_args = Vec::with_capacity(1 + args.len());
             call_args.push(base);
             call_args.extend(args);
