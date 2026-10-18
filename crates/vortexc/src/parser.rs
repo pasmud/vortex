@@ -280,12 +280,6 @@ impl<'a> Parser<'a> {
                         );
                     }
                 } else if self.at_keyword("self") {
-                    (
-                        false,
-                        "self".to_string(),
-                        TypeExpr::Named("Self".to_string()),
-                    )
-                } else if self.at_keyword("self") {
                     // `self` is a reserved word, so it is accepted as a parameter
                     // name only here, where it is the method receiver and carries
                     // no type annotation; it is typed as `Self`.

@@ -423,6 +423,16 @@ fn parses_a_trait_declaration() {
     assert_eq!(t.methods[0].name, "bar");
 }
 
+#[test]
+fn parses_a_trait_declaration_with_self_receiver() {
+    let p = ok("trait Foo { fn bar(self); }");
+    assert_eq!(p.traits.len(), 1);
+    let t = &p.traits[0];
+    assert_eq!(t.name, "Foo");
+    assert_eq!(t.methods.len(), 1);
+    assert_eq!(t.methods[0].name, "bar");
+}
+
 // ---------------------------------------------------------------- negative cases
 //
 // Each of these asserts the line, the column and what was expected.
