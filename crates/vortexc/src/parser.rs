@@ -261,9 +261,25 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {
-                let (mutable, name, ty) = if self.eat(&Tok::Amp) && self.at_keyword("self") {
-                    // `&self` is a borrowed receiver; typed as `Self`.
+                let (mutable, name, ty) = if self.at(&Tok::Amp) {
+                    // `&self` receiver: `&` must be followed by `self`.
+                    let amp_pos = self.pos();
                     self.advance();
+                    if self.at_keyword("self") {
+                        self.advance();
+                        (
+                            false,
+                            "self".to_string(),
+                            TypeExpr::Named("Self".to_string()),
+                        )
+                    } else {
+                        return self.fail(
+                            amp_pos,
+                            "expected `self` after `&`",
+                            "a `self` parameter",
+                        );
+                    }
+                } else if self.at_keyword("self") {
                     (
                         false,
                         "self".to_string(),
@@ -410,8 +426,9 @@ impl<'a> Parser<'a> {
     //
     // `trait` and `impl` are collected on the program rather than as `Item`s, so
     // the rest of the pipeline keeps matching `Item::Function`/`Struct`/`Enum`
-    // exhaustively. The monomorphisation pass consumes them into concrete
-    // functions.
+    // exhaustively. Monomorphisation (Stage 17) will consume them to resolve
+    // trait method calls and generate concrete instances; until then they
+    // are parsed but unused by lowering/checking/cgen.
 
     fn trait_decl(&mut self) -> Result<TraitDecl, ParseError> {
         let pos = self.pos();
@@ -447,7 +464,7 @@ impl<'a> Parser<'a> {
         };
         // A trait method is a signature; a body is not permitted in v0.1.
         if self.at(&Tok::LBrace) {
-            return self.fail(pos, "`;` or `}` in a trait method", "a `{`");
+            return self.fail(self.pos(), "`;` or `}` in a trait method", "a `{`");
         }
         let _ = self.eat(&Tok::Semicolon);
         Ok(TraitMethod {
@@ -480,7 +497,7 @@ impl<'a> Parser<'a> {
                     methods.push(self.fn_decl()?);
                 } else {
                     let found = self.peek().describe();
-                    return self.fail(pos, "`fn` in an impl block", &found);
+                    return self.fail(self.pos(), "`fn` in an impl block", &found);
                 }
             }
             self.expect(Tok::RBrace)?;
@@ -860,8 +877,15 @@ impl<'a> Parser<'a> {
 
     fn after_dot(&mut self, pos: Pos, base: Expr, name: String) -> Result<Expr, ParseError> {
         // `Type.variant(..)` needs a type name in front of the dot.
+        // A `Type.variant(...)` receiver is a type name (PascalCase by
+        // convention), which desugars to a VariantCall. A lowercase
+        // identifier is a value, which desugars to a method Call.
         let ty = match &base.kind {
-            ExprKind::Ident(n) if !is_keyword(n) => Some(n.clone()),
+            ExprKind::Ident(n)
+                if !is_keyword(n) && n.chars().next().map_or(false, |c| c.is_uppercase()) =>
+            {
+                Some(n.clone())
+            }
             _ => None,
         };
 
