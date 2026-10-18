@@ -39,6 +39,13 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let ast = match vortexc::monomorphise(&ast) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
     let lowered = match vortexc::lower(&ast) {
         Ok(l) => l,
         Err(e) => {

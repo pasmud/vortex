@@ -12,6 +12,7 @@ pub mod interp;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
+pub mod mono;
 pub mod parser;
 pub mod span;
 pub mod token;
@@ -22,6 +23,7 @@ pub mod vm;
 pub use checker::{check, TypeError};
 pub use lexer::{lex, LexError};
 pub use lower::{lower, LowerError};
+pub use mono::monomorphise;
 pub use parser::{parse, ParseError};
 pub use span::Pos;
 pub use token::{Tok, Token};
@@ -47,6 +49,7 @@ pub fn run_source(src: &str, out: &mut dyn std::io::Write) -> Result<Value, Erro
 /// that a program fails the checker without running.
 pub fn check_source(src: &str) -> Result<(ir::Program, types::Decls), Error> {
     let program = parse(src).map_err(Error::Parse)?;
+    let program = monomorphise(&program).map_err(Error::Lower)?;
     let lowered = lower(&program).map_err(Error::Lower)?;
     let decls = check(&lowered).map_err(Error::Type)?;
     Ok((lowered, decls))
@@ -60,6 +63,7 @@ pub fn check_source(src: &str) -> Result<(ir::Program, types::Decls), Error> {
 /// than the other.
 pub fn run_on_vm(src: &str, out: &mut dyn std::io::Write) -> Result<Value, Error> {
     let program = parse(src).map_err(Error::Parse)?;
+    let program = monomorphise(&program).map_err(Error::Lower)?;
     let lowered = lower(&program).map_err(Error::Lower)?;
     check(&lowered).map_err(Error::Type)?;
     let compiled = bytecode::compile(&lowered).map_err(|e| Error::Compile(e.message))?;
