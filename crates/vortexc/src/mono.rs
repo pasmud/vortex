@@ -7,9 +7,10 @@
 //! concrete functions and concrete calls: no type parameters, no trait objects
 //! and no dynamic dispatch.
 //!
-//! Trait method calls are resolved on concrete types only. A generic function
-//! body is transformed in place (method calls inside it are resolved) but
-//! generic instantiation itself is deferred until a future stage.
+//! Trait method calls are resolved on concrete types only. Generic functions
+//! are instantiated at each call site: type arguments are inferred from the
+//! call arguments, trait bounds are checked, and a specialised concrete
+//! function is emitted under a mangled name.
 
 use crate::ast::*;
 use crate::ir::LowerError;
@@ -60,10 +61,14 @@ pub fn monomorphise(program: &Program) -> Result<Program, MonoError> {
     }
 
     // Non-generic top-level functions are emitted under their original names.
-    // Generic functions are left as-is for now; concrete types only.
+    // Generic functions are NOT emitted here — they are instantiated lazily
+    // at each call site in transform_call, producing a distinct concrete
+    // function per set of inferred type arguments.
     for item in &program.items {
         if let Item::Function(f) = item {
-            m.emit_fn(&f.node, &Substitution::empty(), &f.node.name, f.pos)?;
+            if f.node.generics.is_empty() {
+                m.emit_fn(&f.node, &Substitution::empty(), &f.node.name, f.pos)?;
+            }
         }
     }
 
@@ -98,7 +103,8 @@ struct FnTemplate {
 }
 
 /// A name -> concrete-type substitution, applied when a type parameter is
-/// replaced by a real type at a call site. Currently only used for `Self`.
+/// replaced by a real type at a call site. Used for `Self` (in impl methods)
+/// and for generic type parameters inferred at call sites.
 #[derive(Default, Clone)]
 struct Substitution {
     map: Vec<(String, TypeExpr)>,
@@ -114,6 +120,22 @@ impl Substitution {
         Substitution {
             map: vec![("Self".to_string(), TypeExpr::Named(self_ty.to_string()))],
         }
+    }
+
+    /// Merges `other` into `self`, with `other` entries taking precedence for
+    /// shared keys. This lets a generic call site combine an outer substitution
+    /// (e.g. `Self -> Int` from an impl method) with the inferred type
+    /// arguments for the callee.
+    fn combine(&self, other: &Substitution) -> Substitution {
+        let mut map = self.map.clone();
+        for (k, v) in &other.map {
+            if let Some(pos) = map.iter().position(|(kk, _)| kk == k) {
+                map[pos] = (k.clone(), v.clone());
+            } else {
+                map.push((k.clone(), v.clone()));
+            }
+        }
+        Substitution { map }
     }
 
     fn apply(&self, ty: &TypeExpr) -> TypeExpr {
@@ -281,8 +303,48 @@ impl Mono {
             arg_types.push(t);
         }
 
-        // 1) A named function (concrete or generic). Leave the callee alone.
+        // 1) A named function (concrete or generic).
         if let Some(tpl) = self.ctx.fns.get(callee) {
+            // Generic function: infer type arguments from call args, check
+            // trait bounds, then emit a specialised copy under a mangled name.
+            if !tpl.generics.is_empty() {
+                // Clone template fields so the immutable borrow from
+                // `self.ctx.fns` ends before we call `self.emit_fn`.
+                let generics = tpl.generics.clone();
+                let params = tpl.params.clone();
+                let ret = tpl.ret.clone();
+                let body = tpl.body.clone();
+
+                let inferred = infer_subst(&params, &arg_types, &generics, pos)?;
+                self.check_trait_bounds(&generics, &inferred, pos)?;
+                let mangled = mangle_generic_fn(callee, &inferred, &generics);
+                // Combine the outer substitution (e.g. Self -> Int from an
+                // impl method) with the inferred type arguments so that any
+                // references to outer type parameters are also resolved inside
+                // the specialised body.
+                let combined = subst.combine(&inferred);
+                let f = FnDecl {
+                    name: callee.to_string(),
+                    generics: Vec::new(),
+                    params,
+                    ret: ret.clone(),
+                    body,
+                };
+                let _ = self.emit_fn(&f, &combined, &mangled, pos)?;
+                return Ok((
+                    Expr::new(
+                        pos,
+                        ExprKind::Call {
+                            callee: mangled,
+                            args: arg_exprs,
+                        },
+                    ),
+                    ret.as_ref()
+                        .map(|r| combined.apply(r))
+                        .unwrap_or(TypeExpr::Named("Unit".to_string())),
+                ));
+            }
+            // Non-generic function: check argument types.
             check_arg_types(callee, subst, &tpl.params, &arg_types, pos)?;
             return Ok((
                 Expr::new(
@@ -816,6 +878,44 @@ impl Mono {
             .map(|f| f.ty.clone())
             .unwrap_or_else(unknown)
     }
+
+    /// For each generic parameter that carries a trait bound, verifies that
+    /// the concrete type inferred for it implements the trait. Emits a
+    /// diagnostic naming the type parameter, the concrete type, and the
+    /// unsatisfied trait.
+    fn check_trait_bounds(
+        &self,
+        generics: &[GenericParam],
+        subst: &Substitution,
+        pos: Pos,
+    ) -> Result<(), LowerError> {
+        for g in generics {
+            for bound in &g.bounds {
+                let concrete = subst.apply(&TypeExpr::Named(g.name.clone()));
+                if !self.implements_trait(&concrete, bound) {
+                    return Err(LowerError {
+                        message: format!(
+                            "the type parameter `{}` resolves to type `{}`, which does not implement trait `{}`",
+                            g.name,
+                            concrete.name(),
+                            bound
+                        ),
+                        pos,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns true when `ty` has a concrete (non-generic) impl for `trait_`.
+    fn implements_trait(&self, ty: &TypeExpr, trait_name: &str) -> bool {
+        let type_name = ty.name();
+        self.ctx
+            .impls
+            .iter()
+            .any(|d| d.trait_ty.as_deref() == Some(trait_name) && d.self_ty == type_name)
+    }
 }
 
 /// The return type of a builtin function, given the argument types.
@@ -899,4 +999,102 @@ fn check_arg_types(
 
 fn is_unknown(ty: &TypeExpr) -> bool {
     matches!(ty, TypeExpr::Named(n) if n == "?")
+}
+
+/// A type parameter name is a bare `Named` whose identifier appears in
+/// `generics`.
+fn is_type_param(ty: &TypeExpr, generics: &[GenericParam]) -> bool {
+    matches!(
+        ty,
+        TypeExpr::Named(n) if generics.iter().any(|g| &g.name == n)
+    )
+}
+
+/// Matches declared parameter types against call-site argument types to infer
+/// a substitution for the function's generic parameters. Returns a
+/// substitution mapping each type parameter to its inferred concrete type, or
+/// an error when a concrete parameter type mismatches its argument, a type
+/// parameter is mapped inconsistently, or a type parameter cannot be inferred
+/// from any argument.
+fn infer_subst(
+    params: &[Param],
+    arg_types: &[TypeExpr],
+    generics: &[GenericParam],
+    pos: Pos,
+) -> Result<Substitution, LowerError> {
+    if params.len() != arg_types.len() {
+        return Err(LowerError {
+            message: format!(
+                "expected {} argument{}, found {}",
+                params.len(),
+                if params.len() == 1 { "" } else { "s" },
+                arg_types.len()
+            ),
+            pos,
+        });
+    }
+
+    let mut map: Vec<(String, TypeExpr)> = Vec::new();
+    for (param, arg) in params.iter().zip(arg_types.iter()) {
+        if is_unknown(arg) {
+            continue;
+        }
+
+        let param_ty = &param.ty;
+        if is_type_param(param_ty, generics) {
+            // Infer the concrete type for this type parameter.
+            let name = param_ty.name().to_string();
+            if let Some(existing) = map.iter().find(|(k, _)| k == &name) {
+                if existing.1 != *arg {
+                    return Err(LowerError {
+                        message: format!(
+                            "expected type `{}`, found type `{}`",
+                            existing.1.name(),
+                            arg.name()
+                        ),
+                        pos,
+                    });
+                }
+            } else {
+                map.push((name, arg.clone()));
+            }
+        } else if !is_unknown(arg) && param_ty.name() != arg.name() {
+            // Concrete parameter type does not match the argument.
+            return Err(LowerError {
+                message: format!(
+                    "expected type `{}`, found type `{}`",
+                    param_ty.name(),
+                    arg.name()
+                ),
+                pos,
+            });
+        }
+    }
+
+    // Every generic parameter must be inferred from at least one argument.
+    for g in generics {
+        if !map.iter().any(|(k, _)| k == &g.name) {
+            return Err(LowerError {
+                message: format!("cannot infer type parameter `{}`", g.name),
+                pos,
+            });
+        }
+    }
+
+    Ok(Substitution { map })
+}
+
+/// Builds a deterministic mangled name for a generic function specialisation,
+/// e.g. `id` with `{T -> Int}` becomes `vortex_id_Int`.
+fn mangle_generic_fn(name: &str, subst: &Substitution, generics: &[GenericParam]) -> String {
+    let parts: Vec<String> = generics
+        .iter()
+        .map(|g| {
+            subst
+                .apply(&TypeExpr::Named(g.name.clone()))
+                .name()
+                .to_string()
+        })
+        .collect();
+    format!("vortex_{}_{}", name, parts.join("_"))
 }

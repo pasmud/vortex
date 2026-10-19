@@ -223,11 +223,11 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// Parses a generic parameter list `<T, U: Trait>`, returning the empty list
-    /// when there is none.
+    /// Parses a generic parameter list `[T, U: Trait]`, returning the empty
+    /// list when there is none.
     fn generics(&mut self) -> Result<Vec<GenericParam>, ParseError> {
         let mut params = Vec::new();
-        if self.eat(&Tok::Lt) {
+        if self.eat(&Tok::LBracket) {
             loop {
                 let pos = self.pos();
                 let name = self.expect_ident("a generic parameter name")?;
@@ -242,14 +242,14 @@ impl<'a> Parser<'a> {
                 }
                 params.push(GenericParam { name, bounds, pos });
                 if self.eat(&Tok::Comma) {
-                    if self.at(&Tok::Gt) {
+                    if self.at(&Tok::RBracket) {
                         break;
                     }
                 } else {
                     break;
                 }
             }
-            self.expect(Tok::Gt)?;
+            self.expect(Tok::RBracket)?;
         }
         Ok(params)
     }
