@@ -1045,6 +1045,10 @@ impl<'a> Parser<'a> {
                         arms,
                     }
                 }
+                "self" => {
+                    self.advance();
+                    ExprKind::Ident("self".to_string())
+                }
                 _ => {
                     if is_keyword(name) {
                         let found = format!("the keyword `{}`", name);

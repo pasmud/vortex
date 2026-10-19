@@ -532,3 +532,46 @@ fn a_cast_reaches_the_interpreter_with_the_right_type() {
     .expect("should run");
     assert_eq!(String::from_utf8_lossy(&out), "7.000000\n");
 }
+
+// ---------------------------------------------------------------- trait method resolution
+
+#[test]
+fn resolves_trait_method_on_concrete_type() {
+    let src = "
+trait Foo { fn bar(&self); }
+impl Foo for Int {
+    fn bar(&self) {
+        println(int_to_string(self));
+    }
+}
+fn main() {
+    let x = 1;
+    x.bar();
+}
+";
+    let mut out = Vec::new();
+    vortexc::run_source(src, &mut out).expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "1\n");
+}
+
+#[test]
+fn rejects_unresolved_trait_method() {
+    let src = "
+trait Foo { fn bar(&self); }
+impl Foo for Int {
+    fn bar(&self) {
+        println(int_to_string(self));
+    }
+}
+fn main() {
+    let x = 1;
+    x.baz();
+}
+";
+    let err = earlier_stage(src, "lower");
+    assert!(
+        err.contains("no method `baz` found for type `Int`"),
+        "expected no method diagnostic, was {:?}",
+        err
+    );
+}
