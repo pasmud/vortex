@@ -737,3 +737,75 @@ fn main() {
     .expect("should run");
     assert_eq!(String::from_utf8_lossy(&out), "7\n");
 }
+
+// ---------------------------------------------------------------- generic trait impls
+
+#[test]
+fn a_generic_trait_method_call_on_a_type_parameter_resolves_via_structural_unification() {
+    let mut out = Vec::new();
+    vortexc::run_source(
+        "trait Foo { fn bar(&self) -> Int; }
+impl[T] Foo for T {
+    fn bar(&self) -> Int { return 42; }
+}
+fn f[T](x: T) -> Int { return x.bar(); }
+fn main() {
+    println(int_to_string(f(42)));
+}",
+        &mut out,
+    )
+    .expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "42\n");
+}
+
+#[test]
+fn a_trait_method_call_on_a_concrete_type_resolves_through_a_generic_impl() {
+    let mut out = Vec::new();
+    vortexc::run_source(
+        "trait Bar { fn baz(&self) -> Int; }
+impl[T] Bar for T {
+    fn baz(&self) -> Int { return 7; }
+}
+fn g[T: Bar](x: T) -> Int { return x.baz(); }
+fn main() {
+    println(int_to_string(g(1)));
+}",
+        &mut out,
+    )
+    .expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "7\n");
+}
+
+#[test]
+fn a_trait_bound_violation_on_a_generic_impl_names_the_type_parameter_concrete_type_and_trait() {
+    let src = "trait Foo { fn bar(&self) -> Int; }
+trait Greet { fn greet(&self) -> Str; }
+impl[T: Greet] Foo for T {
+    fn bar(&self) -> Int { return 42; }
+}
+fn main() {
+    let x = 42;
+    x.bar();
+}";
+    let err = earlier_stage(src, "mono");
+    assert!(
+        err.contains("does not implement trait"),
+        "expected a trait bound violation, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("Greet"),
+        "expected the message to name the unsatisfied trait `Greet`, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("Int"),
+        "expected the message to name the concrete type `Int`, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("T"),
+        "expected the message to name the type parameter `T`, was {:?}",
+        err
+    );
+}

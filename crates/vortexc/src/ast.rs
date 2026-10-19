@@ -102,6 +102,7 @@ pub struct TraitDecl {
 pub struct ImplDecl {
     pub trait_ty: Option<String>,
     pub self_ty: String,
+    pub generics: Vec<GenericParam>,
     pub methods: Vec<FnDecl>,
     pub pos: Pos,
 }
