@@ -96,11 +96,6 @@ Seven tests added to `crates/vortexc/tests/checker.rs`:
 
 ## What remains
 
-- Generic trait impls (`impl<T> Trait for Concrete<T>`) are not implemented.
-  `impl_decl()` does not parse a generic parameter list, and
-  `resolve_trait_method` matches receiver types by name equality, not by
-  structural unification. The minimum viable scope of Stage 20 is generic
-  functions with trait bounds checked against concrete impls.
 - `TypeExpr` does not have a `Generic(String, Vec<TypeExpr>)` variant, so
   parameterized type arguments in type annotations (e.g. `x: Vec<T>`) are not
   supported. Type arguments are inferred exclusively from call site argument

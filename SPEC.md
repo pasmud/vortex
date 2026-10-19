@@ -204,6 +204,15 @@ dispatch and no v table. Runtime type checks exist only for `as` casts between
 related types, which are checked at runtime and which the type system cannot
 prove.
 
+Generic trait impls use the same `[T]` square-bracket syntax as generic
+functions. An impl block may declare type parameters, and a *blanket impl*
+(`impl[T] Trait for T`) matches any concrete type by structural unification:
+the impl's type parameter and `Self` are both bound to the receiver type at
+the call site. Bounds on the impl's type parameters (e.g. `impl[T: Bar]
+Trait for T`) are checked at the call site, just as generic-function bounds
+are. Generic impl methods are monomorphised on demand and emitted under a
+mangled name that uses the concrete receiver type.
+
 ## 7. Memory safety model
 
 **Vortex uses linear ownership with move semantics, deterministic deallocation,
@@ -358,12 +367,12 @@ building the benchmark workload.
 - **There is no `Option` or `Result` construction.** Rules 5 and 6 of section
   6.1 describe them. `?` is accepted by the parser and typed by the checker,
   but there is no way to write `none`, `some`, `ok` or `err` yet.
-- **Generics (function-level).** Generic functions and trait bounds are
-  monomorphised by the `mono` pass. Type arguments are inferred from call
-  arguments at the call site; every distinct set of argument types produces a
-  separate concrete function. See section 6.3 and `STAGE20.md`.
-- **Generic trait impls and parameterized type annotations.** `impl<T>
-  Trait for Type` is not parsed, and types like `Vec<T>` are not yet a
+- **Generics (function-level and trait impls).** Generic functions, trait
+  bounds, and generic trait impls are monomorphised by the `mono` pass. Type
+  arguments are inferred from call arguments at the call site; every distinct
+  set of argument types produces a separate concrete function. See section 6.3
+  and `STAGE20.md`, `STAGE21.md`.
+- **Parameterized type annotations.** Types like `Vec<T>` are not yet a
   `TypeExpr` variant. Type arguments are inferred exclusively from call site
   argument types, not from type annotations.
 - **Move semantics are checked.** Section 7 is enforced since stage 6: a use

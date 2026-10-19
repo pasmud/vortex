@@ -237,3 +237,26 @@ Acceptance criteria:
       `RUSTFLAGS=-D warnings` are clean.
 
 `STAGE20.md` records the result.
+
+## Stage 21, complete: generic trait impls
+
+Scope: implement generic trait impls (`impl<T> Trait for Type<T>`) in the
+`mono` pass, extending Stage 20's generic function monomorphisation and
+Stage 18's concrete-type trait method resolution to support generic impl
+blocks matched by structural unification rather than name equality.
+
+Acceptance criteria:
+
+- [x] Impl blocks parse generic parameter lists `[T]` using the existing
+  `generics()` parser helper.
+- [x] A generic trait method call on a generic type parameter resolves to the
+  generic impl's method via structural unification, not name equality.
+- [x] A trait method call on a concrete instantiation of a generic type
+  resolves to the correct monomorphised function.
+- [x] A trait bound violation on a generic impl emits a diagnostic naming the
+  type parameter, concrete type, and unsatisfied trait.
+- [x] All 204 tests pass (201 prior + 3 new).
+- [x] `cargo fmt --all --check` and `cargo build --all-targets` with
+  `RUSTFLAGS=-D warnings` are clean.
+
+`STAGE21.md` records the result.

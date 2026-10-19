@@ -472,6 +472,7 @@ impl<'a> Parser<'a> {
     fn impl_decl(&mut self) -> Result<ImplDecl, ParseError> {
         let pos = self.pos();
         self.advance();
+        let generics = self.generics()?;
         let first = self.type_expr()?;
         let (trait_ty, self_ty) = if self.at_keyword("for") {
             self.advance();
@@ -499,6 +500,7 @@ impl<'a> Parser<'a> {
         Ok(ImplDecl {
             trait_ty,
             self_ty,
+            generics,
             methods,
             pos,
         })
