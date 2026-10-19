@@ -45,7 +45,7 @@ pub enum Item {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub name: String,
-    /// The generic parameters, e.g. `T` in `fn id<T>(x: T) -> T`. Empty for a
+    /// The generic parameters, e.g. `T` in `fn id[T](x: T) -> T`. Empty for a
     /// non-generic function.
     pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
@@ -53,7 +53,7 @@ pub struct FnDecl {
     pub body: Block,
 }
 
-/// A generic parameter, e.g. `T` or `T: Trait` in `fn f<T: Trait>()`.
+/// A generic parameter, e.g. `T` or `T: Trait` in `fn f[T: Trait]()`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenericParam {
     pub name: String,

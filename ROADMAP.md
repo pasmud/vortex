@@ -181,3 +181,59 @@ Acceptance criteria:
 No performance figure is claimed and none reaches `BENCHMARKS.md`.
 `STAGE11.md` records the result, including why the guard has nothing to check
 in it and what is checked instead.
+
+## Stage 12 onwards
+
+Stages 12 through 18 extended the parser, the tree interpreter, the checker and
+the bytecode VM. Each stage is recorded in its own `STAGE*.md` file.
+
+## Stage 18, complete: trait method resolution in the monomorphiser
+
+Scope: resolve trait method calls to concrete impl methods during the `mono`
+pass, by matching the receiver type against `impl` blocks. Concrete receiver
+types only; generic trait impls and trait bounds are left for a later stage.
+
+Acceptance criteria:
+
+- [x] A trait method call on a concrete type resolves to the correct impl method.
+- [x] An unresolved trait method is rejected at the mono stage.
+- [x] A trait method call on a struct type resolves to the struct's impl method.
+- [x] 237 tests pass, `cargo fmt --all --check` and `cargo build --all-targets`
+      with `RUSTFLAGS=-D warnings` are clean.
+
+Merged in pull request #33.
+
+## Stage 19, complete: function type checking in the mono pass
+
+Scope: check argument types against parameter types in the `mono` pass, and
+apply substitutions to `Record`, `Cast`, `VariantCall` and `VariantRecord`
+type names.
+
+Acceptance criteria:
+
+- [x] An argument of the wrong type is rejected at the mono stage with
+      "expected type `X`, found type `Y`".
+- [x] 237 tests pass, `cargo fmt --all --check` and `cargo build --all-targets`
+      with `RUSTFLAGS=-D warnings` are clean.
+
+Merged in pull request #36.
+
+## Stage 20, complete: generic function monomorphisation and trait bounds
+
+Scope: implement generic function monomorphisation and trait bound checking in
+the `mono` pass, extending Stage 18's concrete-type trait method resolution to
+generic functions.
+
+Acceptance criteria:
+
+- [x] Generic functions with type parameters `[T]` and trait bounds `[T: Trait]`
+      are parsed.
+- [x] Type arguments are inferred from call site argument types.
+- [x] A separate concrete function is produced per distinct set of type arguments.
+- [x] A trait bound violation emits a diagnostic naming the type parameter,
+      concrete type, and unsatisfied trait.
+- [x] All 244 tests pass (237 prior + 7 new).
+- [x] `cargo fmt --all --check` and `cargo build --all-targets` with
+      `RUSTFLAGS=-D warnings` are clean.
+
+`STAGE20.md` records the result.

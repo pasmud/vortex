@@ -597,3 +597,143 @@ fn main() {
         err
     );
 }
+
+// ---------------------------------------------------------------- generic instantiation
+
+#[test]
+fn a_generic_function_is_monomorphised_at_each_call_site() {
+    let mut out = Vec::new();
+    vortexc::run_source(
+        "fn id[T](x: T) -> T { return x; }
+fn main() {
+    println(int_to_string(id(42)));
+    println(id(\"hi\"));
+}",
+        &mut out,
+    )
+    .expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "42\nhi\n");
+}
+
+#[test]
+fn a_generic_function_with_two_type_parameters() {
+    let mut out = Vec::new();
+    vortexc::run_source(
+        "fn pair[T, U](x: T, y: U) -> T { return x; }
+fn main() {
+    println(int_to_string(pair(1, 2.5)));
+    println(pair(\"a\", 3));
+}",
+        &mut out,
+    )
+    .expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "1\na\n");
+}
+
+#[test]
+fn a_generic_function_that_calls_a_trait_method() {
+    let mut out = Vec::new();
+    vortexc::run_source(
+        "trait Foo { fn bar(&self) -> Int; }
+impl Foo for Int {
+    fn bar(&self) -> Int { return 42; }
+}
+fn f[T: Foo](x: T) -> Int { return x.bar(); }
+fn main() {
+    println(int_to_string(f(42)));
+}",
+        &mut out,
+    )
+    .expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "42\n");
+}
+
+#[test]
+fn a_trait_bound_violation_is_rejected_at_monomorphisation() {
+    let src = "trait Foo { fn bar(&self) -> Int; }
+impl Foo for Int {
+    fn bar(&self) -> Int { return 42; }
+}
+fn f[T: Foo](x: T) -> Int { return x.bar(); }
+fn main() {
+    let z = f(\"hi\");
+}";
+    let err = earlier_stage(src, "mono");
+    assert!(
+        err.contains("does not implement trait"),
+        "expected a trait bound violation, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("Str"),
+        "expected the message to name the concrete type `Str`, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("Foo"),
+        "expected the message to name the trait `Foo`, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("T"),
+        "expected the message to name the type parameter `T`, was {:?}",
+        err
+    );
+}
+
+#[test]
+fn a_generic_function_called_with_inconsistent_type_arguments_is_rejected() {
+    let src = "fn pair[T](x: T, y: T) -> T { return x; }
+fn main() {
+    let z = pair(1, \"hi\");
+}";
+    let err = earlier_stage(src, "mono");
+    assert!(
+        err.contains("expected type"),
+        "expected a type mismatch, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("found type"),
+        "expected the message to say 'found type', was {:?}",
+        err
+    );
+}
+
+#[test]
+fn a_generic_function_with_a_unsatisfied_bound_is_rejected() {
+    let src = "trait Bar { fn baz(&self); }
+fn g[T: Bar](x: T) -> Int { return 1; }
+fn main() {
+    let z = g(1);
+}";
+    let err = earlier_stage(src, "mono");
+    assert!(
+        err.contains("does not implement trait"),
+        "expected a trait bound violation, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("Int"),
+        "expected the message to name the concrete type `Int`, was {:?}",
+        err
+    );
+}
+
+#[test]
+fn a_generic_function_can_be_called_through_a_trait_bound() {
+    let mut out = Vec::new();
+    vortexc::run_source(
+        "trait Bar { fn baz(&self) -> Int; }
+impl Bar for Int {
+    fn baz(&self) -> Int { return 7; }
+}
+fn g[T: Bar](x: T) -> Int { return x.baz(); }
+fn main() {
+    println(int_to_string(g(1)));
+}",
+        &mut out,
+    )
+    .expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "7\n");
+}

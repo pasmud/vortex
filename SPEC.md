@@ -193,8 +193,12 @@ type and the variant: `Shape.rect { w: 2.0, h: 3.0 }`.
 
 ### 6.3 Generics and dispatch
 
+    fn id[T](x: T) -> T { return x; }
+
 Generic functions and types are monomorphised. Every use produces a separate
-concrete function. Trait bounds are checked at the call site and resolved at
+concrete function. Type arguments are inferred from call arguments; every
+distinct set of argument types produces a separate concrete function with a
+mangled name. Trait bounds are checked at the call site and resolved at
 compile time. Vortex v0.1 has **no trait objects**, so there is no dynamic
 dispatch and no v table. Runtime type checks exist only for `as` casts between
 related types, which are checked at runtime and which the type system cannot
@@ -354,8 +358,14 @@ building the benchmark workload.
 - **There is no `Option` or `Result` construction.** Rules 5 and 6 of section
   6.1 describe them. `?` is accepted by the parser and typed by the checker,
   but there is no way to write `none`, `some`, `ok` or `err` yet.
-- **No generics and no traits.** Section 6.3 describes monomorphisation, and
-  the parser has no generic syntax, so nothing about it is implemented.
+- **Generics (function-level).** Generic functions and trait bounds are
+  monomorphised by the `mono` pass. Type arguments are inferred from call
+  arguments at the call site; every distinct set of argument types produces a
+  separate concrete function. See section 6.3 and `STAGE20.md`.
+- **Generic trait impls and parameterized type annotations.** `impl<T>
+  Trait for Type` is not parsed, and types like `Vec<T>` are not yet a
+  `TypeExpr` variant. Type arguments are inferred exclusively from call site
+  argument types, not from type annotations.
 - **Move semantics are checked.** Section 7 is enforced since stage 6: a use
   after a move and a second binding of a moved value are both errors.
   `examples/ownership.vx` demonstrates the behaviour and

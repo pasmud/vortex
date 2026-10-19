@@ -171,10 +171,17 @@ sound without types. Everything a type rule can prove is caught earlier.
 
 Stated plainly rather than left silent, as the stage 3 brief requires.
 
-- **Traits and generics.** `SPEC.md` section 6.3 says generic functions are
-  monomorphised and trait bounds resolve at compile time. The parser accepts no
-  generic syntax and `trait` is a keyword with no meaning yet, so nothing about
-  monomorphisation is implemented. Section 6.3 is unimplemented.
+- **Generic functions and trait bounds.** `SPEC.md` section 6.3 says generic
+  functions are monomorphised and trait bounds resolve at compile time. Generic
+  function syntax `[T]` and `[T: Trait]` is now parsed, and the `mono` pass
+  (Section 5.5 of `STAGE18.md`) instantiates a separate concrete function per
+  call site, checking trait bounds against existing concrete `impl` blocks.
+  Generic trait impls (`impl<T> Trait for T`) and parameterized type arguments
+  in annotations (e.g. `Vec<T>`) are not yet supported.
+- **Generic trait impls.** `impl_decl` does not parse a generic parameter list
+  and `resolve_trait_method` matches receiver types by name equality, not by
+  structural unification. A bound on a type parameter checks against concrete
+  `impl` blocks only.
 - **Records as a type annotation.** Section 6.1 rule 3 calls anonymous record
   types structural. Vortex writes a struct literal only against a declared
   name, so there is no syntax for an anonymous record type. Structural typing is
