@@ -23,7 +23,7 @@ pub mod vm;
 pub use checker::{check, TypeError};
 pub use lexer::{lex, LexError};
 pub use lower::{lower, LowerError};
-pub use mono::monomorphise;
+pub use mono::{monomorphise, MonoError};
 pub use parser::{parse, ParseError};
 pub use span::Pos;
 pub use token::{Tok, Token};
@@ -49,7 +49,7 @@ pub fn run_source(src: &str, out: &mut dyn std::io::Write) -> Result<Value, Erro
 /// that a program fails the checker without running.
 pub fn check_source(src: &str) -> Result<(ir::Program, types::Decls), Error> {
     let program = parse(src).map_err(Error::Parse)?;
-    let program = monomorphise(&program).map_err(Error::Lower)?;
+    let program = monomorphise(&program).map_err(Error::Mono)?;
     let lowered = lower(&program).map_err(Error::Lower)?;
     let decls = check(&lowered).map_err(Error::Type)?;
     Ok((lowered, decls))
@@ -63,7 +63,7 @@ pub fn check_source(src: &str) -> Result<(ir::Program, types::Decls), Error> {
 /// than the other.
 pub fn run_on_vm(src: &str, out: &mut dyn std::io::Write) -> Result<Value, Error> {
     let program = parse(src).map_err(Error::Parse)?;
-    let program = monomorphise(&program).map_err(Error::Lower)?;
+    let program = monomorphise(&program).map_err(Error::Mono)?;
     let lowered = lower(&program).map_err(Error::Lower)?;
     check(&lowered).map_err(Error::Type)?;
     let compiled = bytecode::compile(&lowered).map_err(|e| Error::Compile(e.message))?;
@@ -75,6 +75,7 @@ pub fn run_on_vm(src: &str, out: &mut dyn std::io::Write) -> Result<Value, Error
 #[derive(Debug, Clone, PartialEq)]
 pub enum Error {
     Parse(ParseError),
+    Mono(MonoError),
     Lower(LowerError),
     Type(TypeError),
     /// The bytecode compiler refused the program.
@@ -87,6 +88,7 @@ impl Error {
     pub fn stage(&self) -> &'static str {
         match self {
             Error::Parse(_) => "parse",
+            Error::Mono(_) => "mono",
             Error::Lower(_) => "lower",
             Error::Type(_) => "check",
             Error::Compile(_) => "compile",
@@ -99,6 +101,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Parse(e) => write!(f, "{}", e),
+            Error::Mono(e) => write!(f, "{}", e),
             Error::Lower(e) => write!(f, "{}", e),
             Error::Type(e) => write!(f, "{}", e),
             Error::Compile(e) => write!(f, "error: {}", e),

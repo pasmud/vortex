@@ -16,10 +16,21 @@ use crate::ir::LowerError;
 use crate::span::Pos;
 use std::collections::{HashMap, HashSet};
 
+/// A monomorphisation error. Currently identical to a lowering error: same
+/// message and position fields.
+pub type MonoError = LowerError;
+
+/// The sentinel type used where inference cannot determine a concrete type.
+/// It is never a real type: `resolve_trait_method` rejects it with a clear
+/// message and function-type checking skips it.
+fn unknown() -> TypeExpr {
+    TypeExpr::Named("?".to_string())
+}
+
 /// The monomorphised program. Trait and impl blocks are consumed: the output
 /// contains only the original concrete functions plus the trait impl methods
 /// emitted as concrete functions.
-pub fn monomorphise(program: &Program) -> Result<Program, LowerError> {
+pub fn monomorphise(program: &Program) -> Result<Program, MonoError> {
     let ctx = Ctx::build(program);
     let mut m = Mono {
         ctx,
@@ -199,7 +210,7 @@ impl Mono {
         subst: &Substitution,
         name: &str,
         pos: Pos,
-    ) -> Result<(), LowerError> {
+    ) -> Result<(), MonoError> {
         if self.emitted.contains(name) || self.transforming.contains(name) {
             return Ok(());
         }
@@ -259,7 +270,7 @@ impl Mono {
         subst: &Substitution,
         env: &mut Vec<HashMap<String, TypeExpr>>,
         pos: Pos,
-    ) -> Result<(Expr, TypeExpr), LowerError> {
+    ) -> Result<(Expr, TypeExpr), MonoError> {
         // Transform the arguments first, so any trait call among them is
         // resolved before this call's receiver type is determined.
         let mut arg_exprs = Vec::with_capacity(args.len());
@@ -272,6 +283,7 @@ impl Mono {
 
         // 1) A named function (concrete or generic). Leave the callee alone.
         if let Some(tpl) = self.ctx.fns.get(callee) {
+            check_arg_types(callee, subst, &tpl.params, &arg_types, pos)?;
             return Ok((
                 Expr::new(
                     pos,
@@ -319,9 +331,11 @@ impl Mono {
             ));
         }
 
-        // 4) A desugared `base.name(args)` where `name` is not a function: a
-        // trait method call. Resolve the receiver's concrete type and find the
-        // matching impl method.
+        // 4) A desugared `base.name(args)` where `name` is not a function or
+        // builtin: a trait/method call. Resolve the receiver's concrete type
+        // and find the matching impl method. When the receiver type is unknown
+        // (`?`) we report a clear error instead of silently falling through to
+        // the "unknown function" message.
         if !arg_exprs.is_empty() {
             let receiver_type = arg_types.get(0).cloned();
             if let Some(rtype) = receiver_type {
@@ -359,6 +373,12 @@ impl Mono {
         pos: Pos,
     ) -> Result<(String, Option<TypeExpr>), LowerError> {
         let type_name = receiver_type.name();
+        if type_name == "?" {
+            return Err(LowerError {
+                message: format!("the receiver type of `.{}` cannot be resolved", method),
+                pos,
+            });
+        }
         for decl in &self.ctx.impls {
             if decl.self_ty == type_name {
                 for fn_decl in &decl.methods {
@@ -385,7 +405,7 @@ impl Mono {
         body: &Block,
         subst: &Substitution,
         env: &mut Vec<HashMap<String, TypeExpr>>,
-    ) -> Result<(Block, TypeExpr), LowerError> {
+    ) -> Result<(Block, TypeExpr), MonoError> {
         let mut new_stmts = Vec::with_capacity(body.stmts.len());
         env.push(HashMap::new());
 
@@ -415,12 +435,12 @@ impl Mono {
 
     fn transform_stmt(
         &mut self,
-        stmt: &Stmt,
+        s: &Stmt,
         subst: &Substitution,
         env: &mut Vec<HashMap<String, TypeExpr>>,
-    ) -> Result<Stmt, LowerError> {
-        let pos = stmt.pos;
-        let kind = match &stmt.kind {
+    ) -> Result<Stmt, MonoError> {
+        let pos = s.pos;
+        let kind = match &s.kind {
             StmtKind::Let {
                 name,
                 mutable,
@@ -492,7 +512,7 @@ impl Mono {
         e: &Expr,
         subst: &Substitution,
         env: &mut Vec<HashMap<String, TypeExpr>>,
-    ) -> Result<(Expr, TypeExpr), LowerError> {
+    ) -> Result<(Expr, TypeExpr), MonoError> {
         let pos = e.pos;
         let (kind, ty) = match &e.kind {
             ExprKind::Int(_) => (e.kind.clone(), TypeExpr::Named("Int".to_string())),
@@ -512,6 +532,7 @@ impl Mono {
                 variant,
                 args,
             } => {
+                let resolved = subst.apply(&TypeExpr::Named(ty_name.clone()));
                 let mut new_args = Vec::with_capacity(args.len());
                 for a in args {
                     let (e2, _) = self.transform_expr(a, subst, env)?;
@@ -519,11 +540,11 @@ impl Mono {
                 }
                 (
                     ExprKind::VariantCall {
-                        ty: ty_name.clone(),
+                        ty: resolved.name().to_string(),
                         variant: variant.clone(),
                         args: new_args,
                     },
-                    TypeExpr::Named(ty_name.clone()),
+                    resolved,
                 )
             }
             ExprKind::VariantRecord {
@@ -531,6 +552,7 @@ impl Mono {
                 variant,
                 fields,
             } => {
+                let resolved = subst.apply(&TypeExpr::Named(ty_name.clone()));
                 let mut new_fields = Vec::with_capacity(fields.len());
                 for (name, f) in fields {
                     let (e2, _) = self.transform_expr(f, subst, env)?;
@@ -538,17 +560,18 @@ impl Mono {
                 }
                 (
                     ExprKind::VariantRecord {
-                        ty: ty_name.clone(),
+                        ty: resolved.name().to_string(),
                         variant: variant.clone(),
                         fields: new_fields,
                     },
-                    TypeExpr::Named(ty_name.clone()),
+                    resolved,
                 )
             }
             ExprKind::Record {
                 ty: ty_name,
                 fields,
             } => {
+                let resolved = subst.apply(&TypeExpr::Named(ty_name.clone()));
                 let mut new_fields = Vec::with_capacity(fields.len());
                 for (name, f) in fields {
                     let (e2, _) = self.transform_expr(f, subst, env)?;
@@ -556,18 +579,13 @@ impl Mono {
                 }
                 (
                     ExprKind::Record {
-                        ty: ty_name.clone(),
+                        ty: resolved.name().to_string(),
                         fields: new_fields,
                     },
-                    TypeExpr::Named(ty_name.clone()),
+                    resolved,
                 )
             }
-            ExprKind::Variant { ty: _, variant: _ } => {
-                // A bare variant constructor value (e.g. `Shape.circle`). Its
-                // type is the enum type, but we only need it for method
-                // resolution, which does not apply here.
-                (e.kind.clone(), TypeExpr::Named("Unit".to_string()))
-            }
+            ExprKind::Variant { ty: _, variant: _ } => (e.kind.clone(), unknown()),
             ExprKind::Field(base, name) => {
                 let (b, bty) = self.transform_expr(base, subst, env)?;
                 let field_ty = self.field_type(&bty, name);
@@ -576,10 +594,7 @@ impl Mono {
             ExprKind::Index(arr, idx) => {
                 let (a, _) = self.transform_expr(arr, subst, env)?;
                 let (i, _) = self.transform_expr(idx, subst, env)?;
-                (
-                    ExprKind::Index(Box::new(a), Box::new(i)),
-                    TypeExpr::Named("Unit".to_string()),
-                )
+                (ExprKind::Index(Box::new(a), Box::new(i)), unknown())
             }
             ExprKind::Tuple(items) => {
                 let mut new_items = Vec::with_capacity(items.len());
@@ -587,10 +602,7 @@ impl Mono {
                     let (e2, _) = self.transform_expr(i, subst, env)?;
                     new_items.push(e2);
                 }
-                (
-                    ExprKind::Tuple(new_items),
-                    TypeExpr::Named("Unit".to_string()),
-                )
+                (ExprKind::Tuple(new_items), unknown())
             }
             ExprKind::Paren(inner) => {
                 let (e2, ty) = self.transform_expr(inner, subst, env)?;
@@ -610,10 +622,7 @@ impl Mono {
                     let (e2, _) = self.transform_expr(i, subst, env)?;
                     new_items.push(e2);
                 }
-                (
-                    ExprKind::Array(new_items),
-                    TypeExpr::Named("Unit".to_string()),
-                )
+                (ExprKind::Array(new_items), unknown())
             }
             ExprKind::Repeat { value, count } => {
                 let (v, _) = self.transform_expr(value, subst, env)?;
@@ -623,7 +632,7 @@ impl Mono {
                         value: Box::new(v),
                         count: Box::new(c),
                     },
-                    TypeExpr::Named("Unit".to_string()),
+                    unknown(),
                 )
             }
             ExprKind::Neg(inner) => {
@@ -652,14 +661,23 @@ impl Mono {
             }
             ExprKind::Cast(inner, ty) => {
                 let (e2, _) = self.transform_expr(inner, subst, env)?;
-                (ExprKind::Cast(Box::new(e2), ty.clone()), ty.clone())
+                let ty = subst.apply(ty);
+                (ExprKind::Cast(Box::new(e2), ty.clone()), ty)
             }
             ExprKind::Assign { name, index, value } => {
                 let (v, _) = self.transform_expr(value, subst, env)?;
+                let new_index = match &index {
+                    Some((base, idx_expr)) => {
+                        let (b, _) = self.transform_expr(base, subst, env)?;
+                        let (i, _) = self.transform_expr(idx_expr, subst, env)?;
+                        Some((Box::new(b), Box::new(i)))
+                    }
+                    None => None,
+                };
                 (
                     ExprKind::Assign {
                         name: name.clone(),
-                        index: index.clone(),
+                        index: new_index,
                         value: Box::new(v),
                     },
                     TypeExpr::Named("Unit".to_string()),
@@ -698,7 +716,7 @@ impl Mono {
             ExprKind::Match { scrutinee, arms } => {
                 let (s, _sty) = self.transform_expr(scrutinee, subst, env)?;
                 let mut new_arms = Vec::with_capacity(arms.len());
-                let mut arm_ty = TypeExpr::Named("Unit".to_string());
+                let mut arm_ty = unknown();
                 for arm in arms {
                     let (new_arm, ty) = self.transform_arm(arm, subst, env)?;
                     new_arms.push(new_arm);
@@ -721,7 +739,7 @@ impl Mono {
         e: &Else,
         subst: &Substitution,
         env: &mut Vec<HashMap<String, TypeExpr>>,
-    ) -> Result<(Else, TypeExpr), LowerError> {
+    ) -> Result<(Else, TypeExpr), MonoError> {
         match e {
             Else::Block(b) => {
                 let (block, ty) = self.transform_block(b, subst, env)?;
@@ -739,15 +757,13 @@ impl Mono {
         arm: &Arm,
         subst: &Substitution,
         env: &mut Vec<HashMap<String, TypeExpr>>,
-    ) -> Result<(Arm, TypeExpr), LowerError> {
+    ) -> Result<(Arm, TypeExpr), MonoError> {
         env.push(HashMap::new());
         let mut bindings = Vec::new();
         for p in &arm.patterns {
             for name in pattern_bindings(p) {
                 bindings.push(name.clone());
-                env.last_mut()
-                    .unwrap()
-                    .insert(name, TypeExpr::Named("Unit".to_string()));
+                env.last_mut().unwrap().insert(name, unknown());
             }
         }
         let (body, ty) = self.transform_expr(&arm.body, subst, env)?;
@@ -768,7 +784,7 @@ impl Mono {
         name: &str,
         pos: Pos,
         env: &[HashMap<String, TypeExpr>],
-    ) -> Result<TypeExpr, LowerError> {
+    ) -> Result<TypeExpr, MonoError> {
         for scope in env.iter().rev() {
             if let Some(t) = scope.get(name) {
                 return Ok(t.clone());
@@ -788,9 +804,9 @@ impl Mono {
 
     /// Resolves the field type of `name` on `base_type`.
     ///
-    /// Returns a `Unit` fallback for types we cannot resolve. The checker
-    /// produces the real error for unknown fields; the mono pass only needs
-    /// types for trait-method receiver resolution.
+    /// Returns an unknown type fallback for fields we cannot resolve. The
+    /// checker produces the real error for unknown fields; the mono pass only
+    /// needs types for trait-method receiver resolution.
     fn field_type(&self, base_type: &TypeExpr, name: &str) -> TypeExpr {
         let type_name = base_type.name();
         self.ctx
@@ -798,7 +814,7 @@ impl Mono {
             .get(type_name)
             .and_then(|fields| fields.iter().find(|f| f.name == name))
             .map(|f| f.ty.clone())
-            .unwrap_or_else(|| TypeExpr::Named("Unit".to_string()))
+            .unwrap_or_else(unknown)
     }
 }
 
@@ -843,4 +859,44 @@ fn pattern_bindings(p: &Pattern) -> Vec<String> {
         PatternKind::Variant { bindings, .. } => bindings.clone(),
         PatternKind::Binding(n) => vec![n.clone()],
     }
+}
+
+/// Checks that each argument type is compatible with its declared parameter
+/// type. Skipped when any argument type is unknown (`?`) to avoid false
+/// positives from the mono pass's incomplete inference.
+fn check_arg_types(
+    callee: &str,
+    subst: &Substitution,
+    params: &[Param],
+    arg_types: &[TypeExpr],
+    pos: Pos,
+) -> Result<(), LowerError> {
+    let _ = callee;
+    if arg_types.len() != params.len() {
+        return Ok(());
+    }
+    for (arg_ty, param) in arg_types.iter().zip(params) {
+        if is_unknown(arg_ty) {
+            continue;
+        }
+        let want = subst.apply(&param.ty);
+        if is_unknown(&want) {
+            continue;
+        }
+        if want.name() != arg_ty.name() {
+            return Err(LowerError {
+                message: format!(
+                    "expected type `{}`, found type `{}`",
+                    want.name(),
+                    arg_ty.name()
+                ),
+                pos,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn is_unknown(ty: &TypeExpr) -> bool {
+    matches!(ty, TypeExpr::Named(n) if n == "?")
 }

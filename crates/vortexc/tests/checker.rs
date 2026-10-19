@@ -337,11 +337,28 @@ fn a_name_may_be_reused_in_a_nested_scope() {
 
 #[test]
 fn an_argument_of_the_wrong_type_is_rejected() {
-    assert_at(
+    let msg = earlier_stage(
         "fn f(a: Int) -> Int { return a; }\nfn main() {\n    let x = f(\"text\");\n}",
-        3,
-        14,
-        "argument 1 of `f` is `Str` where `Int` is expected",
+        "mono",
+    );
+    assert!(
+        msg.contains("expected type `Int`, found type `Str`"),
+        "got: {}",
+        msg
+    );
+    assert!(msg.contains("3:14"), "expected position 3:14, got: {}", msg);
+}
+
+#[test]
+fn rejects_argument_type_mismatch_in_mono_stage() {
+    let msg = earlier_stage(
+        "fn add(a: Int, b: Int) -> Int { return a; }\nfn main() { add(\"hello\", 1); }\n",
+        "mono",
+    );
+    assert!(
+        msg.contains("expected type `Int`, found type `Str`"),
+        "got: {}",
+        msg
     );
 }
 
@@ -568,10 +585,15 @@ fn main() {
     x.baz();
 }
 ";
-    let err = earlier_stage(src, "lower");
+    let err = earlier_stage(src, "mono");
     assert!(
         err.contains("no method `baz` found for type `Int`"),
         "expected no method diagnostic, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("10:6"),
+        "expected the diagnostic to point at the method call (10:6), was {:?}",
         err
     );
 }
