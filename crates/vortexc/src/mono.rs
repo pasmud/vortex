@@ -59,8 +59,8 @@ pub fn monomorphise(program: &Program) -> Result<Program, MonoError> {
             continue;
         }
         for method in &decl.methods {
-            let name = m.mangle_impl_method(decl, &method.name, &decl.self_ty);
-            let subst = Substitution::self_for(&decl.self_ty);
+            let name = m.mangle_impl_method(decl, &method.name, decl.self_ty.name());
+            let subst = Substitution::self_for(decl.self_ty.name());
             m.emit_fn(&method, &subst, &name, decl.pos)?;
         }
     }
@@ -152,6 +152,18 @@ impl Substitution {
                     }
                 }
                 ty.clone()
+            }
+            TypeExpr::Generic(name, args) => {
+                // If the generic name itself is a binding (e.g. Self -> Foo[Int]),
+                // replace the whole type.
+                for (k, v) in self.map.iter().rev() {
+                    if k == name {
+                        return v.clone();
+                    }
+                }
+                // Otherwise, recursively apply to the type arguments.
+                let new_args: Vec<TypeExpr> = args.iter().map(|a| self.apply(a)).collect();
+                TypeExpr::Generic(name.clone(), new_args)
             }
         }
     }
@@ -434,15 +446,15 @@ impl Mono {
     /// Searches impl blocks for `receiver_type` and returns the mangled name
     /// of `method` along with its declared return type.
     ///
-    /// Matching is done in two phases:
-    /// 1. Non-generic impls (and generic impls with a concrete self type) are
-    ///    matched by name equality.
-    /// 2. Generic impls whose `self_ty` is a type parameter (a blanket impl
-    ///    such as `impl[T] Trait for T`) are matched by structural unification:
-    ///    the receiver type is bound to the impl's `Self` and to the type
-    ///    parameter, then bounds on the parameters are checked. The method is
-    ///    emitted lazily under a mangled name that uses the concrete receiver
-    ///    type so each instantiation gets its own function.
+    /// Matching is done by structural unification: the impl's `self_ty` is
+    /// unified against the concrete `receiver_type`.  Non-generic impls match
+    /// by name equality; generic impls bind their type parameters to the
+    /// matching concrete types — blanket impls (`impl[T] Trait for T`) bind
+    /// the parameter directly; parameterized impls (`impl[T] Trait for
+    /// Concrete[T]`) unify type arguments recursively.  Bounds on the impl's
+    /// generic parameters are checked, and the method is emitted lazily under
+    /// a mangled name using the concrete receiver type so each instantiation
+    /// gets its own function.
     fn resolve_trait_method(
         &mut self,
         method: &str,
@@ -457,34 +469,20 @@ impl Mono {
             });
         }
 
-        // Phase 1 — name-equality match (concrete impls and generic impls
-        // whose self_ty is a concrete type name).
-        for decl in &self.ctx.impls.clone() {
-            if !self.is_blanket_impl(decl) && decl.self_ty == type_name {
-                for fn_decl in &decl.methods {
-                    if fn_decl.name == method {
-                        let mangled = self.mangle_impl_method(&decl, method, type_name);
-                        let self_subst = Substitution::self_for(type_name);
-                        let ret = fn_decl.ret.as_ref().map(|r| self_subst.apply(r));
-                        self.emit_fn(&fn_decl, &self_subst, &mangled, decl.pos)?;
-                        return Ok((mangled, ret));
-                    }
-                }
-            }
-        }
+        for decl in self.ctx.impls.clone() {
+            if let Some(mut subst) =
+                self.unify_impl_type(&decl.self_ty, receiver_type, &decl.generics)
+            {
+                // Bind Self to the concrete self type.
+                let self_ty_resolved = subst.apply(&decl.self_ty);
+                subst.map.push(("Self".to_string(), self_ty_resolved));
 
-        // Phase 2 — structural unification for blanket impls
-        // (`impl[T] Trait for T`).
-        for decl in &self.ctx.impls.clone() {
-            if self.is_blanket_impl(&decl) {
-                // Build a substitution that binds Self and the matching
-                // generic parameter to the concrete receiver type.
-                let subst = self.unify_impl_receiver(&decl, type_name);
+                // Check that the concrete type satisfies any bounds on the
+                // impl's generic parameters.
+                self.check_trait_bounds(&decl.generics, &subst, pos)?;
+
                 for fn_decl in &decl.methods {
                     if fn_decl.name == method {
-                        // Check that the concrete type satisfies any bounds
-                        // on the impl's generic parameters.
-                        self.check_trait_bounds(&decl.generics, &subst, pos)?;
                         let mangled = self.mangle_impl_method(&decl, method, type_name);
                         self.emit_fn(&fn_decl, &subst, &mangled, decl.pos)?;
                         let ret = fn_decl.ret.as_ref().map(|r| subst.apply(r));
@@ -949,39 +947,91 @@ impl Mono {
         Ok(())
     }
 
-    /// Returns true when `ty` has a concrete (non-generic) impl for `trait_`.
+    /// Returns true when `ty` implements a trait named `trait_name`.
+    /// Uses the same structural unification as `resolve_trait_method` so
+    /// that generic blanket impls (`impl[T] Trait for T`) are recognised.
     fn implements_trait(&self, ty: &TypeExpr, trait_name: &str) -> bool {
-        let type_name = ty.name();
         self.ctx.impls.iter().any(|d| {
-            d.trait_ty.as_deref() == Some(trait_name) && self.impl_self_matches(d, type_name)
+            d.trait_ty.as_deref() == Some(trait_name)
+                && self.unify_impl_type(&d.self_ty, ty, &d.generics).is_some()
         })
     }
 
-    /// Returns true when `decl`'s `self_ty` is one of its own generic
-    /// parameters — i.e. a blanket impl such as `impl[T] Trait for T`.
-    fn is_blanket_impl(&self, decl: &ImplDecl) -> bool {
-        decl.generics.iter().any(|g| g.name == decl.self_ty)
+    /// Tries to unify the impl's `self_ty` (`impl_ty`) against a concrete
+    /// `receiver_ty`.  Returns `Some(subst)` when the types match — for
+    /// concrete impls the substitution is empty; for generic impls it binds the
+    /// impl's type parameters to the matching concrete types.
+    fn unify_impl_type(
+        &self,
+        impl_ty: &TypeExpr,
+        receiver_ty: &TypeExpr,
+        generics: &[GenericParam],
+    ) -> Option<Substitution> {
+        let params: Vec<String> = generics.iter().map(|g| g.name.clone()).collect();
+        self.unify_recursive(impl_ty, receiver_ty, &params)
     }
 
-    /// Whether `decl` matches a concrete receiver type. Concrete impls
-    /// (including generic impls whose `self_ty` is a concrete name) match by
-    /// name equality. Blanket impls match any receiver.
-    fn impl_self_matches(&self, decl: &ImplDecl, receiver: &str) -> bool {
-        if self.is_blanket_impl(decl) {
-            true
-        } else {
-            decl.self_ty == receiver
+    /// Recursively unifies `impl_ty` against `receiver_ty`, producing a
+    /// substitution that binds type parameters (names listed in `params`) to
+    /// the concrete types they unify with.
+    fn unify_recursive(
+        &self,
+        impl_ty: &TypeExpr,
+        receiver_ty: &TypeExpr,
+        params: &[String],
+    ) -> Option<Substitution> {
+        match (impl_ty, receiver_ty) {
+            (TypeExpr::Named(n1), TypeExpr::Named(n2)) => {
+                if n1 == n2 {
+                    Some(Substitution::empty())
+                } else if params.contains(n1) {
+                    // A type parameter on the impl side binds to the concrete
+                    // receiver type.
+                    Some(Substitution {
+                        map: vec![(n1.clone(), receiver_ty.clone())],
+                    })
+                } else {
+                    None
+                }
+            }
+            (TypeExpr::Generic(n1, args1), TypeExpr::Generic(n2, args2)) => {
+                if n1 != n2 || args1.len() != args2.len() {
+                    return None;
+                }
+                let mut map = Vec::with_capacity(args1.len());
+                for (a1, a2) in args1.iter().zip(args2.iter()) {
+                    let s = self.unify_recursive(a1, a2, params)?;
+                    map.extend(s.map);
+                }
+                Some(Substitution { map })
+            }
+            (TypeExpr::Named(n1), _) => {
+                if params.contains(n1) {
+                    // A type parameter on the impl side binds to the concrete
+                    // receiver type.
+                    Some(Substitution {
+                        map: vec![(n1.clone(), receiver_ty.clone())],
+                    })
+                } else if n1 == receiver_ty.name() {
+                    // Non-generic impl: matches by base name, ignoring type
+                    // arguments on the receiver (e.g. `impl Foo for Wrapper`
+                    // matches a receiver `Wrapper[Int]`).
+                    Some(Substitution::empty())
+                } else {
+                    None
+                }
+            }
+            (TypeExpr::Generic(_, _), TypeExpr::Named(_)) => {
+                // The impl side is parameterized but the receiver is a bare
+                // name.  This can only match when there are no generic params
+                // to infer and the names are equal.
+                if params.is_empty() && impl_ty.name() == receiver_ty.name() {
+                    Some(Substitution::empty())
+                } else {
+                    None
+                }
+            }
         }
-    }
-
-    /// Builds a substitution for a blanket impl by binding `Self` and the
-    /// self-type parameter to the concrete receiver type.
-    fn unify_impl_receiver(&self, decl: &ImplDecl, receiver: &str) -> Substitution {
-        let mut map: Vec<(String, TypeExpr)> = Vec::new();
-        let receiver_ty = TypeExpr::Named(receiver.to_string());
-        map.push(("Self".to_string(), receiver_ty.clone()));
-        map.push((decl.self_ty.clone(), receiver_ty));
-        Substitution { map }
     }
 }
 

@@ -176,8 +176,8 @@ Stated plainly rather than left silent, as the stage 3 brief requires.
   function syntax `[T]` and `[T: Trait]` is now parsed, and the `mono` pass
   (Section 5.5 of `STAGE18.md`) instantiates a separate concrete function per
   call site, checking trait bounds against existing concrete `impl` blocks.
-  Parameterized type arguments in annotations (e.g. `Vec<T>`) are not yet
-  supported.
+  Parameterized type arguments (e.g. `Vec<T>`) and parameterized impl self types
+  (e.g. `impl[T] Trait for Concrete[T]`) are now supported in the `mono` pass.
 - **Records as a type annotation.** Section 6.1 rule 3 calls anonymous record
   types structural. Vortex writes a struct literal only against a declared
   name, so there is no syntax for an anonymous record type. Structural typing is

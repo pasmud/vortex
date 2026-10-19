@@ -96,7 +96,7 @@ Seven tests added to `crates/vortexc/tests/checker.rs`:
 
 ## What remains
 
-- `TypeExpr` does not have a `Generic(String, Vec<TypeExpr>)` variant, so
-  parameterized type arguments in type annotations (e.g. `x: Vec<T>`) are not
-  supported. Type arguments are inferred exclusively from call site argument
-  types.
+- `TypeExpr` now has a `Generic(String, Vec<TypeExpr>)` variant (implemented in
+  `STAGE22.md`), so parameterized type arguments in type annotations (e.g.
+  `x: Vec[T]`) are supported in the `mono` pass. Type arguments are still
+  inferred exclusively from call site argument types, not from annotations.

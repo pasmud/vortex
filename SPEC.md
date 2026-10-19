@@ -213,6 +213,15 @@ Trait for T`) are checked at the call site, just as generic-function bounds
 are. Generic impl methods are monomorphised on demand and emitted under a
 mangled name that uses the concrete receiver type.
 
+Generic impls may also parameterize their self type
+(`impl[T] Trait for Concrete[T]`), where the impl's `self_ty` is a
+`TypeExpr::Generic` carrying the type parameters as type arguments. At a call
+site the concrete receiver type is unified structurally against the impl's
+`self_ty`: base names must match and type arguments are unified recursively,
+binding type parameters to the matching concrete arguments. This extends the
+blanket-impl unification (section 6.3, `impl[T] Trait for T`) to parameterized
+self types.
+
 ## 7. Memory safety model
 
 **Vortex uses linear ownership with move semantics, deterministic deallocation,
@@ -367,14 +376,14 @@ building the benchmark workload.
 - **There is no `Option` or `Result` construction.** Rules 5 and 6 of section
   6.1 describe them. `?` is accepted by the parser and typed by the checker,
   but there is no way to write `none`, `some`, `ok` or `err` yet.
-- **Generics (function-level and trait impls).** Generic functions, trait
-  bounds, and generic trait impls are monomorphised by the `mono` pass. Type
+- **Generics (function-level, trait impls, and parameterized types).** Generic
+  functions, trait bounds, and generic trait impls (including parameterized self
+  types like `Concrete[T]`) are monomorphised by the `mono` pass. Type
   arguments are inferred from call arguments at the call site; every distinct
-  set of argument types produces a separate concrete function. See section 6.3
-  and `STAGE20.md`, `STAGE21.md`.
-- **Parameterized type annotations.** Types like `Vec<T>` are not yet a
-  `TypeExpr` variant. Type arguments are inferred exclusively from call site
-  argument types, not from type annotations.
+  set of argument types produces a separate concrete function. Parameterized
+  type annotations (e.g. `x: Vec[T]`) are parsed as `TypeExpr::Generic` and
+  substituted through. See section 6.3 and `STAGE20.md`, `STAGE21.md`,
+  `STAGE22.md`.
 - **Move semantics are checked.** Section 7 is enforced since stage 6: a use
   after a move and a second binding of a moved value are both errors.
   `examples/ownership.vx` demonstrates the behaviour and

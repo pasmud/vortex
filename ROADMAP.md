@@ -248,15 +248,39 @@ blocks matched by structural unification rather than name equality.
 Acceptance criteria:
 
 - [x] Impl blocks parse generic parameter lists `[T]` using the existing
-  `generics()` parser helper.
+      `generics()` parser helper.
 - [x] A generic trait method call on a generic type parameter resolves to the
-  generic impl's method via structural unification, not name equality.
+      generic impl's method via structural unification, not name equality.
 - [x] A trait method call on a concrete instantiation of a generic type
-  resolves to the correct monomorphised function.
+      resolves to the correct monomorphised function.
 - [x] A trait bound violation on a generic impl emits a diagnostic naming the
-  type parameter, concrete type, and unsatisfied trait.
+      type parameter, concrete type, and unsatisfied trait.
 - [x] All 204 tests pass (201 prior + 3 new).
 - [x] `cargo fmt --all --check` and `cargo build --all-targets` with
-  `RUSTFLAGS=-D warnings` are clean.
+      `RUSTFLAGS=-D warnings` are clean.
 
 `STAGE21.md` records the result.
+
+## Stage 22, complete: parameterized type arguments
+
+Scope: implement parameterized type arguments (e.g. `Vec[T]`) in type annotations
+and generic impl self types (e.g. `impl[T] Trait for Concrete[T]`) in the `mono`
+pass, extending Stage 21's generic trait impls with structural unification for
+parameterized self types.
+
+Acceptance criteria:
+
+- [x] `TypeExpr` has a `Generic(String, Vec<TypeExpr>)` variant; `parse_type()`
+      parses `Name[T1, T2, ...]` as `TypeExpr::Generic`.
+- [x] A parameterized type annotation (e.g. `fn f(x: Wrapper[Int])`) parses and
+      type-checks in the mono pass.
+- [x] A generic impl with a parameterized self type
+      (`impl[T] Trait for Concrete[T]`) parses and resolves to the correct
+      monomorphised method for a concrete instantiation (`Concrete[Int]`).
+- [x] A trait bound violation on a parameterized self type emits a diagnostic
+      naming the type parameter, concrete type, and unsatisfied trait.
+- [x] All 247 tests pass (244 prior + 3 new).
+- [x] `cargo fmt --all --check` and `cargo build --all-targets` with
+      `RUSTFLAGS=-D warnings` are clean.
+
+`STAGE22.md` records the result.

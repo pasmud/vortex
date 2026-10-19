@@ -79,9 +79,4 @@ Three tests added to `crates/vortexc/tests/checker.rs`:
 
 ## What remains
 
-- `TypeExpr` does not have a `Generic(String, Vec<TypeExpr>)` variant, so
-  parameterized type arguments in type annotations (e.g. `x: Vec<T>`) are not
-  supported. The `self_ty` of an impl is a plain name, so an impl like
-  `impl[T] Trait for Concrete[T]` is parsed as `impl[T] Trait for Concrete`
-  with `T` unused in the self type. Only blanket impls where `self_ty` is a
-  type parameter (`impl[T] Trait for T`) are fully supported.
+None — all items in "What remains" are addressed by Stage 22.

@@ -809,3 +809,75 @@ fn main() {
         err
     );
 }
+
+// ---------------------------------------------------------------- parameterized type arguments (Stage 22)
+
+#[test]
+fn a_parameterized_type_annotation_type_checks_and_resolves() {
+    let src = "struct Wrapper { value: Int }
+trait Greet { fn greet(&self) -> Str; }
+impl Greet for Wrapper {
+    fn greet(&self) -> Str { return \"hello\"; }
+}
+fn f(x: Wrapper[Int]) -> Str { return x.greet(); }
+fn main() {
+    let w = Wrapper { value: 42 };
+    println(f(w));
+}";
+    let mut out = Vec::new();
+    vortexc::run_source(src, &mut out).expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "hello\n");
+}
+
+#[test]
+fn a_generic_impl_with_a_parameterized_self_type_resolves_for_a_concrete_instantiation() {
+    let src = "struct Wrapper { value: Int }
+trait Greet { fn greet(&self) -> Str; }
+impl[T] Greet for Wrapper[T] {
+    fn greet(&self) -> Str { return \"hi\"; }
+}
+fn f(x: Wrapper[Int]) -> Str { return x.greet(); }
+fn main() {
+    let w = Wrapper { value: 42 };
+    println(f(w));
+}";
+    let mut out = Vec::new();
+    vortexc::run_source(src, &mut out).expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "hi\n");
+}
+
+#[test]
+fn a_trait_bound_violation_on_a_parameterized_self_type_names_t_concrete_and_trait() {
+    let src = "struct Wrapper { value: Int }
+trait Greet { fn greet(&self) -> Str; }
+trait Foo { fn bar(&self) -> Int; }
+impl[T: Foo] Greet for Wrapper[T] {
+    fn greet(&self) -> Str { return \"hello\"; }
+}
+fn f(x: Wrapper[Int]) -> Str { return x.greet(); }
+fn main() {
+    let w = Wrapper { value: 42 };
+    printf(f(w));
+}";
+    let err = earlier_stage(src, "mono");
+    assert!(
+        err.contains("does not implement trait"),
+        "expected a trait bound violation, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("T"),
+        "expected the message to name the type parameter `T`, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("Int"),
+        "expected the message to name the concrete type `Int`, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("Foo"),
+        "expected the message to name the unsatisfied trait `Foo`, was {:?}",
+        err
+    );
+}

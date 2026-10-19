@@ -97,11 +97,14 @@ pub struct TraitDecl {
 ///
 /// `trait_ty` is `Some` for a trait impl and `None` for an inherent impl.
 /// `self_ty` is the type the impl is written against; `Self` in a method
-/// signature resolves to it.
+/// signature resolves to it. For generic impls such as
+/// `impl[T] Trait for Concrete[T]`, `self_ty` is a `Generic` carrying the
+/// type parameter `[T]` so that structural unification can match a concrete
+/// instantiation like `Concrete[Int]`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDecl {
     pub trait_ty: Option<String>,
-    pub self_ty: String,
+    pub self_ty: TypeExpr,
     pub generics: Vec<GenericParam>,
     pub methods: Vec<FnDecl>,
     pub pos: Pos,
@@ -112,12 +115,24 @@ pub struct ImplDecl {
 pub enum TypeExpr {
     /// A named type such as `Int` or `Point`, possibly `Shape.rect`.
     Named(String),
+    /// A parameterized type such as `Vec[T]` or `Wrapper[Int]`.
+    Generic(String, Vec<TypeExpr>),
 }
 
 impl TypeExpr {
     pub fn name(&self) -> &str {
         match self {
             TypeExpr::Named(n) => n,
+            TypeExpr::Generic(n, _) => n,
+        }
+    }
+
+    /// Returns the type arguments if this is a parameterized type, or an empty
+    /// slice for a named type.
+    pub fn args(&self) -> &[TypeExpr] {
+        match self {
+            TypeExpr::Named(_) => &[],
+            TypeExpr::Generic(_, args) => args,
         }
     }
 }
