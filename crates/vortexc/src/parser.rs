@@ -319,7 +319,25 @@ impl<'a> Parser<'a> {
             name.push('.');
             name.push_str(&variant);
         }
-        Ok(TypeExpr::Named(name))
+        // Parse optional type arguments: `Name[T1, T2, ...]` -> Generic.
+        if self.eat(&Tok::LBracket) {
+            let mut args = Vec::new();
+            loop {
+                let arg = self.type_expr()?;
+                args.push(arg);
+                if self.eat(&Tok::Comma) {
+                    if self.at(&Tok::RBracket) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            self.expect(Tok::RBracket)?;
+            Ok(TypeExpr::Generic(name, args))
+        } else {
+            Ok(TypeExpr::Named(name))
+        }
     }
 
     fn struct_decl(&mut self) -> Result<StructDecl, ParseError> {
@@ -476,10 +494,10 @@ impl<'a> Parser<'a> {
         let first = self.type_expr()?;
         let (trait_ty, self_ty) = if self.at_keyword("for") {
             self.advance();
-            let self_ty = self.expect_ident("a type after `for`")?;
+            let self_ty = self.type_expr()?;
             (Some(first.name().to_string()), self_ty)
         } else {
-            (None, first.name().to_string())
+            (None, first)
         };
         self.expect(Tok::LBrace)?;
         let mut methods = Vec::new();
