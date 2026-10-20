@@ -276,8 +276,26 @@ impl<'a> Checker<'a> {
 
     fn stmt(&mut self, s: &ir::Stmt, env: &mut Env) -> Result<(), TypeError> {
         match s {
-            ir::Stmt::Let { slot, init, pos } => {
+            ir::Stmt::Let {
+                slot,
+                init,
+                ty,
+                pos,
+            } => {
                 let t = self.expr(init, env)?;
+                if let Some(ref annot) = ty {
+                    let resolved = self.resolve_type(annot.name())?;
+                    if !self.compatible(&resolved, &t) {
+                        return self.error(
+                            *pos,
+                            format!(
+                                "let has type annotation `{}` but initializer has type `{}`",
+                                annot.name(),
+                                self.name_of(&t)
+                            ),
+                        );
+                    }
+                }
                 // The name's type is fixed here and never changes to suit a
                 // later use, which is rule 7.
                 env.bind_slot(*slot, t, *pos);

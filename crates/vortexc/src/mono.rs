@@ -545,13 +545,32 @@ impl Mono {
             StmtKind::Let {
                 name,
                 mutable,
+                ty,
                 init,
             } => {
-                let (e, ty) = self.transform_expr(init, subst, env)?;
-                env.last_mut().unwrap().insert(name.clone(), ty);
+                let (e, init_ty) = self.transform_expr(init, subst, env)?;
+                // Apply the substitution to the annotation, if present.
+                let annot = ty.as_ref().map(|t| subst.apply(t));
+                if let Some(ref at) = annot {
+                    if !is_unknown(at) && !is_unknown(&init_ty) && !types_compatible(at, &init_ty) {
+                        return Err(MonoError {
+                            message: format!(
+                                "expected type `{}`, found type `{}`",
+                                at.to_string(),
+                                init_ty.to_string()
+                            ),
+                            pos,
+                        });
+                    }
+                }
+                // Use the annotation type as the variable's type so that
+                // subsequent uses see the declared type.
+                let var_ty = annot.clone().unwrap_or(init_ty);
+                env.last_mut().unwrap().insert(name.clone(), var_ty.clone());
                 StmtKind::Let {
                     name: name.clone(),
                     mutable: *mutable,
+                    ty: annot,
                     init: e,
                 }
             }
@@ -675,7 +694,31 @@ impl Mono {
                 let resolved = subst.apply(&TypeExpr::Named(ty_name.clone()));
                 let mut new_fields = Vec::with_capacity(fields.len());
                 for (name, f) in fields {
-                    let (e2, _) = self.transform_expr(f, subst, env)?;
+                    let (e2, fty) = self.transform_expr(f, subst, env)?;
+                    if let Some(sf) = self.ctx.structs.get(&resolved.name().to_string()) {
+                        if let Some(declared) = sf.iter().find(|fd| &fd.name == name) {
+                            let want = subst.apply(&declared.ty);
+                            // Only check structural compatibility for
+                            // parameterised types.  Simple name mismatches are
+                            // left to the checker.
+                            let both_generic = matches!(want, TypeExpr::Generic(..))
+                                && matches!(fty, TypeExpr::Generic(..));
+                            if both_generic
+                                && !is_unknown(&want)
+                                && !is_unknown(&fty)
+                                && !types_compatible(&want, &fty)
+                            {
+                                return Err(LowerError {
+                                    message: format!(
+                                        "expected type `{}`, found type `{}`",
+                                        want.to_string(),
+                                        fty.to_string()
+                                    ),
+                                    pos: e.pos,
+                                });
+                            }
+                        }
+                    }
                     new_fields.push((name.clone(), e2));
                 }
                 (
@@ -1100,12 +1143,12 @@ fn check_arg_types(
         if is_unknown(&want) {
             continue;
         }
-        if want.name() != arg_ty.name() {
+        if !types_compatible(&want, arg_ty) {
             return Err(LowerError {
                 message: format!(
                     "expected type `{}`, found type `{}`",
-                    want.name(),
-                    arg_ty.name()
+                    want.to_string(),
+                    arg_ty.to_string()
                 ),
                 pos,
             });
@@ -1118,13 +1161,65 @@ fn is_unknown(ty: &TypeExpr) -> bool {
     matches!(ty, TypeExpr::Named(n) if n == "?")
 }
 
-/// A type parameter name is a bare `Named` whose identifier appears in
-/// `generics`.
+/// A type is a type parameter when a bare `Named` or any `Named` nested in the
+/// type arguments of a `Generic` refers to one of the generic parameters.
 fn is_type_param(ty: &TypeExpr, generics: &[GenericParam]) -> bool {
-    matches!(
-        ty,
-        TypeExpr::Named(n) if generics.iter().any(|g| &g.name == n)
-    )
+    match ty {
+        TypeExpr::Named(n) => generics.iter().any(|g| &g.name == n),
+        TypeExpr::Generic(_, args) => args.iter().any(|a| is_type_param(a, generics)),
+    }
+}
+
+/// Recursively searches `param_ty` for a type parameter named `param_name`
+/// and, if found, returns the type from the corresponding position in
+/// `arg_ty`.  This handles both bare type parameters (`T`) and type
+/// parameters nested inside parameterized types (`Wrapper[T]`).
+fn extract_type_arg(param_ty: &TypeExpr, arg_ty: &TypeExpr, param_name: &str) -> Option<TypeExpr> {
+    match (param_ty, arg_ty) {
+        (TypeExpr::Named(n), _) => {
+            if n == param_name {
+                Some(arg_ty.clone())
+            } else {
+                None
+            }
+        }
+        (TypeExpr::Generic(pn, pa), TypeExpr::Generic(an, aa)) => {
+            if pn != an || pa.len() != aa.len() {
+                return None;
+            }
+            for (p, a) in pa.iter().zip(aa.iter()) {
+                if let Some(v) = extract_type_arg(p, a, param_name) {
+                    return Some(v);
+                }
+            }
+            None
+        }
+        // Parameterized param type but bare-name arg: no type argument to
+        // extract.
+        (TypeExpr::Generic(_, _), TypeExpr::Named(_)) => None,
+    }
+}
+
+/// Structural comparison of two types, treating type arguments as significant
+/// while still allowing a bare `Named` to match a `Generic` with the same base
+/// name (e.g. the struct constructor `Wrapper` is compatible with the
+/// annotated type `Wrapper[Int]`).
+fn types_compatible(want: &TypeExpr, got: &TypeExpr) -> bool {
+    match (want, got) {
+        (TypeExpr::Named(n1), TypeExpr::Named(n2)) => n1 == n2,
+        (TypeExpr::Generic(n1, a1), TypeExpr::Generic(n2, a2)) => {
+            if n1 != n2 || a1.len() != a2.len() {
+                return false;
+            }
+            a1.iter()
+                .zip(a2.iter())
+                .all(|(p1, p2)| types_compatible(p1, p2))
+        }
+        // Bare name is compatible with a parameterized type that shares the
+        // same base name.
+        (TypeExpr::Named(n1), TypeExpr::Generic(n2, _)) => n1 == n2,
+        (TypeExpr::Generic(n1, _), TypeExpr::Named(n2)) => n1 == n2,
+    }
 }
 
 /// Matches declared parameter types against call-site argument types to infer
@@ -1159,29 +1254,35 @@ fn infer_subst(
 
         let param_ty = &param.ty;
         if is_type_param(param_ty, generics) {
-            // Infer the concrete type for this type parameter.
-            let name = param_ty.name().to_string();
-            if let Some(existing) = map.iter().find(|(k, _)| k == &name) {
-                if existing.1 != *arg {
-                    return Err(LowerError {
-                        message: format!(
-                            "expected type `{}`, found type `{}`",
-                            existing.1.name(),
-                            arg.name()
-                        ),
-                        pos,
-                    });
+            // Infer the concrete type for each type parameter.  Handles both
+            // bare type parameters (`T`) and type parameters nested inside
+            // parameterized types (`Wrapper[T]`).
+            for g in generics {
+                let name = &g.name;
+                if let Some(v) = extract_type_arg(param_ty, arg, name) {
+                    if let Some(existing) = map.iter().find(|(k, _)| k == name) {
+                        if existing.1 != v {
+                            return Err(LowerError {
+                                message: format!(
+                                    "expected type `{}`, found type `{}`",
+                                    existing.1.to_string(),
+                                    v.to_string()
+                                ),
+                                pos,
+                            });
+                        }
+                    } else {
+                        map.push((name.clone(), v));
+                    }
                 }
-            } else {
-                map.push((name, arg.clone()));
             }
-        } else if !is_unknown(arg) && param_ty.name() != arg.name() {
+        } else if !types_compatible(param_ty, arg) {
             // Concrete parameter type does not match the argument.
             return Err(LowerError {
                 message: format!(
                     "expected type `{}`, found type `{}`",
-                    param_ty.name(),
-                    arg.name()
+                    param_ty.to_string(),
+                    arg.to_string()
                 ),
                 pos,
             });

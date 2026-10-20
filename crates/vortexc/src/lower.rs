@@ -453,6 +453,7 @@ impl Lowerer {
             ast::StmtKind::Let {
                 name,
                 mutable,
+                ty,
                 init,
             } => {
                 if st.declared_here(name) {
@@ -492,6 +493,7 @@ impl Lowerer {
                 out.push(ir::Stmt::Let {
                     slot,
                     init: value,
+                    ty: ty.clone(),
                     pos: s.pos,
                 });
             }

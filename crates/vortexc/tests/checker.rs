@@ -857,7 +857,7 @@ impl[T: Foo] Greet for Wrapper[T] {
 fn f(x: Wrapper[Int]) -> Str { return x.greet(); }
 fn main() {
     let w = Wrapper { value: 42 };
-    printf(f(w));
+    println(f(w));
 }";
     let err = earlier_stage(src, "mono");
     assert!(
@@ -880,4 +880,121 @@ fn main() {
         "expected the message to name the unsatisfied trait `Foo`, was {:?}",
         err
     );
+}
+
+// ---------------------------------------------------------------- type inference from parameterized types (Stage 23)
+
+#[test]
+fn a_type_parameter_nested_in_a_parameterized_type_is_inferred() {
+    let src = "struct Wrapper { value: Int }
+fn make[T](x: T) -> Wrapper[T] { return Wrapper { value: 0 }; }
+fn f[T](x: Wrapper[T]) -> Int { return x.value; }
+fn main() {
+    let w = make(42);
+    println(int_to_string(f(w)));
+}";
+    let mut out = Vec::new();
+    vortexc::run_source(src, &mut out).expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "0\n");
+}
+
+#[test]
+fn a_type_parameter_nested_in_a_parameterized_type_cannot_be_inferred_from_a_bare_name() {
+    let src = "struct Wrapper { value: Int }
+fn f[T](x: Wrapper[T]) -> Int { return x.value; }
+fn main() {
+    let w = Wrapper { value: 42 };
+    println(int_to_string(f(w)));
+}";
+    let err = earlier_stage(src, "mono");
+    assert!(
+        err.contains("cannot infer type parameter"),
+        "expected an inference failure, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("T"),
+        "expected the message to name the type parameter `T`, was {:?}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------- structural field type checking (Stage 23)
+
+#[test]
+fn a_struct_literal_with_a_bare_value_is_accepted_where_a_parameterised_field_is_expected() {
+    let src = "struct Wrapper { value: Int }
+struct Foo { field: Wrapper[Int] }
+fn main() {
+    let w = Wrapper { value: 42 };
+    let f = Foo { field: w };
+    println(int_to_string(f.field.value));
+}";
+    let mut out = Vec::new();
+    vortexc::run_source(src, &mut out).expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "42\n");
+}
+
+#[test]
+fn a_struct_literal_with_a_mismatched_type_argument_is_rejected() {
+    let src = "struct Wrapper { value: Int }
+struct Foo { field: Wrapper[Int] }
+fn main() {
+    let w: Wrapper[Str] = Wrapper { value: 42 };
+    let f = Foo { field: w };
+}";
+    let err = earlier_stage(src, "mono");
+    assert!(
+        err.contains("expected type"),
+        "expected a type mismatch, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("found type"),
+        "expected a type mismatch, was {:?}",
+        err
+    );
+}
+
+// ---------------------------------------------------------------- let type annotations (Stage 23)
+
+#[test]
+fn a_let_with_a_type_annotation_matching_the_initializer_compiles() {
+    let src = "fn main() {
+    let x: Int = 5;
+    println(int_to_string(x));
+}";
+    let mut out = Vec::new();
+    vortexc::run_source(src, &mut out).expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "5\n");
+}
+
+#[test]
+fn a_let_with_a_type_annotation_mismatched_with_the_initializer_is_rejected() {
+    let src = "fn main() {
+    let x: Int = \"hello\";
+}";
+    let err = earlier_stage(src, "mono");
+    assert!(
+        err.contains("expected type"),
+        "expected a type mismatch, was {:?}",
+        err
+    );
+    assert!(
+        err.contains("found type"),
+        "expected a type mismatch, was {:?}",
+        err
+    );
+}
+
+#[test]
+fn a_let_with_a_parameterised_type_annotation_matching_the_initializer_compiles() {
+    let src = "struct Wrapper { value: Int }
+fn main() {
+    let x: Wrapper[Int] = Wrapper { value: 42 };
+    println(int_to_string(x.value));
+}";
+    let mut out = Vec::new();
+    vortexc::run_source(src, &mut out).expect("should run");
+    assert_eq!(String::from_utf8_lossy(&out), "42\n");
 }

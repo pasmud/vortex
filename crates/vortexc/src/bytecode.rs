@@ -357,7 +357,9 @@ impl FnCompiler {
 
     fn stmt(&mut self, s: &ir::Stmt) -> Result<(), CompileError> {
         match s {
-            ir::Stmt::Let { slot, init, pos } => {
+            ir::Stmt::Let {
+                slot, init, pos, ..
+            } => {
                 self.expr(init)?;
                 self.emit(Op::Store(*slot), *pos);
             }
