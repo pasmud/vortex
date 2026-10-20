@@ -1,13 +1,13 @@
 //! Ownership tests.
 //!
-//! `DECISION.md` records that stage 5 kept the linear ownership model of
-//! `SPEC.md` section 7 and did not enforce it. These tests hold that line from
-//! both sides: the properties the model does give are checked, and the
-//! properties it does not yet give are written down as the diagnostic they
-//! would produce, so the gap is visible rather than implied.
+//! `SPEC.md` section 7 states a linear ownership model. Enforcement was
+//! implemented in `STAGE06.md` in the `lower` stage: a use after a move is an
+//! error that names the binding, the line and column, and cites section 7.
+//! Scalars are `Copy` and are not moved; struct field reads borrow rather than
+//! move. These tests pin those diagnostics and check that
+//! `examples/ownership.vx` runs on both engines and prints the same thing.
 //!
-//! They also check that `examples/ownership.vx` runs on both engines and prints
-//! the same thing, which is the artifact that demonstrates the decision.
+//! `STAGE06.md` and `STAGE24.md` record the result.
 
 use vortexc::{run_on_vm, run_source, Error};
 

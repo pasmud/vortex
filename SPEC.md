@@ -286,11 +286,12 @@ benchmark exists, so Option A stands and no collector is adopted.
 
 What the model does and does not give is stated plainly rather than implied.
 Every value has one binding and one owner, and a store into a list changes the
-list in place, which `examples/ownership.vx` demonstrates. **Enforcement is not
-yet implemented**: a use after a move still compiles, and
-`crates/vortexc/tests/ownership.rs` pins that gap with the diagnostic each case
-would produce. Enforcement is the natural next piece of work and it is not
-claimed to exist.
+list in place, which `examples/ownership.vx` demonstrates. **Enforcement is
+implemented in stage 6**: a use after a move is an error that names the binding,
+the line and column, and cites this section. Scalars are `Copy` and are not
+moved; struct field reads borrow rather than move. `crates/vortexc/tests/ownership.rs`
+pins the diagnostics, and `examples/ownership.vx` prints the same output on both
+the tree interpreter and the VM.
 
 ### 7.3 Unsafe code
 
