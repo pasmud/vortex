@@ -430,6 +430,158 @@ fn consuming_a_scalar_field_by_a_call_does_not_move_the_struct() {
     }
 }
 
+// ---------------------------------------------------------------- partial field moves
+//
+// Stage 26: consuming one non-scalar field of a struct deadens only that
+// field. The other fields stay live — readable by value or by field access.
+// A scalar field read is a borrow; an expression field read is a borrow.
+// Loop and match-arm tracking (Stage 6) is unchanged.
+
+/// Moving one non-scalar field deadens only that field, so the whole struct
+/// can no longer be used by value. `SPEC.md` section 7: one owner, and a
+/// moved field takes that piece of the value with it.
+#[test]
+fn using_a_struct_by_value_after_a_partial_move_is_rejected() {
+    let src = "struct Q { v: Int }
+               struct P { x: Q, y: Q }
+               fn take(p: P) -> Int { return p.y.v; }
+               fn main() -> Int {
+                   let p = P { x: Q { v: 1 }, y: Q { v: 2 } };
+                   let a = p.x;
+                   return take(p);
+               }";
+    for engine in ENGINES {
+        let e = rejects(engine, src);
+        let text = e.to_string();
+        assert!(
+            text.contains("has had a field moved out"),
+            "{:?} should reject the whole struct after a partial move, said {:?}",
+            engine,
+            text
+        );
+        assert!(
+            text.contains("section 7"),
+            "the diagnostic must cite section 7, said {:?}",
+            text
+        );
+        assert!(
+            text.contains("7:"),
+            "{:?} should name line 7, said {:?}",
+            engine,
+            text
+        );
+    }
+}
+
+/// Reading a field that was already moved out is dead. The same rule as a
+/// whole-struct use-after-move, but scoped to the field.
+#[test]
+fn using_a_moved_field_after_a_partial_move_is_rejected() {
+    let src = "struct Q { v: Int }
+               struct P { x: Q, y: Q }
+               fn main() -> Int {
+                   let p = P { x: Q { v: 1 }, y: Q { v: 2 } };
+                   let a = p.x;
+                   return a.v + p.x.v;
+               }";
+    for engine in ENGINES {
+        let e = rejects(engine, src);
+        let text = e.to_string();
+        assert!(
+            text.contains("`p.x` has been moved"),
+            "{:?} should reject the use-after-move of a field, said {:?}",
+            engine,
+            text
+        );
+        assert!(
+            text.contains("section 7"),
+            "the diagnostic must cite section 7, said {:?}",
+            text
+        );
+    }
+}
+
+/// A scalar moved twice is still fine, for the same reason.
+#[test]
+fn a_second_binding_after_a_partial_move_is_rejected() {
+    let src = "struct Q { v: Int }
+               struct P { x: Q, y: Q }
+               fn main() -> Int {
+                   let p = P { x: Q { v: 1 }, y: Q { v: 2 } };
+                   let a = p.x;
+                   let b = p;
+                   return a.v + b.y.v;
+               }";
+    for engine in ENGINES {
+        let e = rejects(engine, src);
+        let text = e.to_string();
+        assert!(
+            text.contains("has had a field moved out"),
+            "{:?} should reject binding a partially-moved struct, said {:?}",
+            engine,
+            text
+        );
+        assert!(
+            text.contains("section 7"),
+            "the diagnostic must cite section 7, said {:?}",
+            text
+        );
+    }
+}
+
+/// Moving one non-scalar field leaves the other non-scalar field live, so
+/// reading it is fine — the field read borrows the struct.
+#[test]
+fn reading_the_other_field_after_a_partial_move_is_allowed() {
+    let src = "struct Q { v: Int }
+               struct P { x: Q, y: Q }
+               fn main() -> Int {
+                   let p = P { x: Q { v: 1 }, y: Q { v: 2 } };
+                   let a = p.x;
+                   return a.v + p.y.v;
+               }";
+    for engine in ENGINES {
+        let mut out = Vec::new();
+        let result = match engine {
+            Engine::Tree => run_source(src, &mut out),
+            Engine::Vm => run_on_vm(src, &mut out),
+        };
+        assert_eq!(
+            vortexc::interp::display(&result.unwrap()),
+            "3",
+            "{:?} should compile, the moved field is gone but the other is live",
+            engine
+        );
+    }
+}
+
+/// A scalar field read stays a borrow even when the struct has another
+/// non-scalar field that was moved — the scalar field was never owned by
+/// the move.
+#[test]
+fn reading_a_scalar_field_after_a_partial_move_is_allowed() {
+    let src = "struct Q { v: Int }
+               struct P { x: Q, y: Int }
+               fn main() -> Int {
+                   let p = P { x: Q { v: 1 }, y: 2 };
+                   let a = p.x;
+                   return a.v + p.y;
+               }";
+    for engine in ENGINES {
+        let mut out = Vec::new();
+        let result = match engine {
+            Engine::Tree => run_source(src, &mut out),
+            Engine::Vm => run_on_vm(src, &mut out),
+        };
+        assert_eq!(
+            vortexc::interp::display(&result.unwrap()),
+            "3",
+            "{:?} should compile, a scalar field is a copy not a move",
+            engine
+        );
+    }
+}
+
 // ---------------------------------------------------------------- helpers
 
 fn example_path() -> std::path::PathBuf {
