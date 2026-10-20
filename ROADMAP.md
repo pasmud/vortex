@@ -284,3 +284,28 @@ Acceptance criteria:
       `RUSTFLAGS=-D warnings` are clean.
 
 `STAGE22.md` records the result.
+
+## Stage 23, complete: complete generics
+
+Scope: complete the generics system started in Stages 20-22 with three items:
+type inference from parameterized types, structural field type checking, and
+optional let type annotations. All three land in the `mono` pass (and `checker`
+for let annotations), closing the generics roadmap.
+
+Acceptance criteria:
+
+- [x] `infer_subst` recursively unifies type arguments within parameterized types.
+  A call like `f(w)` where `x: Wrapper[T]` and `w` has type `Wrapper[Int]`
+  infers `T = Int` via recursive `TypeExpr::Generic` traversal.
+- [x] Struct field types are checked structurally in the `mono` pass. A field
+  declared `Wrapper[Int]` accepts a `Wrapper[Int]` value and rejects a
+  `Wrapper[Str]` value; a bare `Wrapper` is accepted.
+- [x] `let` statements accept optional type annotations (`let x: Int = 5`).
+  The annotation is checked against the initializer in both the `mono` pass and
+  the checker.
+- [x] `STAGE23.md` records the result.
+- [x] All 257 tests pass.
+- [x] `cargo fmt --all --check` and `cargo build --all-targets` with
+  `RUSTFLAGS=-D warnings` are clean.
+
+`STAGE23.md` records the result.

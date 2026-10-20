@@ -14,6 +14,7 @@ is testing the wrong stage.
 | lex | `crates/vortexc/src/lexer.rs` | Tokens, escapes, comments. `SPEC.md` section 5 |
 | parse | `crates/vortexc/src/parser.rs` | Syntax. `SPEC.md` section 5, section 8 |
 | lower | `crates/vortexc/src/lower.rs` | Names, scopes, calls, mutability |
+| mono | `crates/vortexc/src/mono.rs` | Generic monomorphisation, trait bounds |
 | check | `crates/vortexc/src/checker.rs` | Types. `SPEC.md` section 6 |
 | run | `crates/vortexc/src/interp.rs` | Division by zero, bounds, depth |
 
@@ -171,22 +172,32 @@ sound without types. Everything a type rule can prove is caught earlier.
 
 Stated plainly rather than left silent, as the stage 3 brief requires.
 
-- **Generic functions and trait bounds.** `SPEC.md` section 6.3 says generic
-  functions are monomorphised and trait bounds resolve at compile time. Generic
-  function syntax `[T]` and `[T: Trait]` is now parsed, and the `mono` pass
-  (Section 5.5 of `STAGE18.md`) instantiates a separate concrete function per
-  call site, checking trait bounds against existing concrete `impl` blocks.
-  Parameterized type arguments (e.g. `Vec<T>`) and parameterized impl self types
-  (e.g. `impl[T] Trait for Concrete[T]`) are now supported in the `mono` pass.
 - **Records as a type annotation.** Section 6.1 rule 3 calls anonymous record
   types structural. Vortex writes a struct literal only against a declared
   name, so there is no syntax for an anonymous record type. Structural typing is
-  implemented for tuples and for list elements, which are the structural types
-  the syntax can actually express.
-- **Variance and lifetime rules.** Section 7 states a move semantics model.
-  Stage 3 does not yet check that a moved value is not used again, so a use
-  after a move still compiles. Section 7 is not yet enforced; that is the
-  natural companion to the memory work in stage 5.
+  implemented for tuples and list elements, which are the structural types the
+  syntax can actually express.
 - **No dynamic dispatch.** Section 6.3 says there are no trait objects, so
   there is no v table and nothing to check. That part of the rule holds by
   construction.
+
+## Generics (section 6.3) and move semantics (section 7)
+
+Both are now checked.
+
+**Generics.** Section 6.3 says generic functions are monomorphised and trait
+bounds resolve at compile time. The `mono` stage (`STAGE18.md` and
+`STAGE20.md` through `STAGE23.md`) instantiates a separate concrete function per
+call site, infers type arguments from call arguments (including type arguments
+nested in parameterised types such as `Wrapper[T]`), checks trait bounds
+against concrete `impl` blocks, and parameterises impl self types
+(`impl[T] Trait for Concrete[T]`). Regression tests live in
+`crates/vortexc/tests/checker.rs`.
+
+**Move semantics.** Section 7 states a linear ownership model. Enforcement is
+implemented in the `lower` stage since `STAGE06.md`: a use after a move is an
+error that names the binding, the line and column, and cites section 7. Scalars
+are `Copy` and are not moved; struct field reads borrow rather than move.
+Diagnostics are pinned in `crates/vortexc/tests/ownership.rs`, and
+`examples/ownership.vx` prints the same output on both the tree interpreter and
+the VM.

@@ -1,6 +1,6 @@
 # Stage 23: Complete generics
 
-## Status: in progress
+## Status: complete
 
 ## Goal
 
