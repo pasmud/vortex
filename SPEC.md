@@ -233,13 +233,20 @@ read. When the owner's scope ends, the value is deallocated immediately and
 deterministically. Values that are scalars or aggregates of scalars are `Copy`
 and are duplicated on assignment instead of moved.
 
-**Enforced since stage 6, extended in stage 25.** Reading a binding whose value
-has been moved is an error naming the binding, the position and this section. The
-lowering pass records a move when an aggregate is handed to a call or bound to a
-new name by assignment (`let q = p;`), and a block carries its moved flags out to
+**Enforced since stage 6, extended in stages 25 and 26.** Reading a binding whose
+value has been moved is an error naming the binding, the position and this section.
+The lowering pass records a move when an aggregate is handed to a call or bound to
+a new name by assignment (`let q = p;`), and a block carries its moved flags out to
 the enclosing scope, so a move inside a loop body outlives the body and a second
 move there is caught. A use of a dead binding after an assignment move is
 rejected with the same diagnostic.
+
+**Per-field tracking (stage 26).** Consuming a non-scalar struct field by value
+(`let a = p.x;` or `take(p.x)`) moves only that field. The base binding's
+remaining fields stay live: `p.y` is still usable after `p.x` is moved, and a
+scalar field (`p.y` where `y: Int`) is always a copy, not a move. A second
+read of a moved field (`p.x` after `p.x` was consumed) and a by-value use of a
+partially-moved struct (`take(p)` after `p.x` was consumed) are both rejected.
 
 Two forms are deliberately **not** moves. A scalar is `Copy`, so `take(n)`
 followed by `n` is fine, as is `let q = n;` followed by `n`. A field read is
@@ -289,7 +296,7 @@ benchmark exists, so Option A stands and no collector is adopted.
 What the model does and does not give is stated plainly rather than implied.
 Every value has one binding and one owner, and a store into a list changes the
 list in place, which `examples/ownership.vx` demonstrates. **Enforcement is
-implemented in stages 6 and 25**: a use after a move is an error that names the
+implemented in stages 6, 25 and 26**: a use after a move is an error that names the
 binding, the line and column, and cites this section. Scalars are `Copy` and are
 not moved; struct field reads borrow rather than move. `crates/vortexc/tests/ownership.rs`
 pins the diagnostics, and `examples/ownership.vx` prints the same output on both

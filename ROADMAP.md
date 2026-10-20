@@ -357,3 +357,31 @@ Acceptance criteria:
 - [x] `cargo test --workspace` passes with no regressions (262 tests).
 - [x] `cargo fmt --all --check` is clean.
 - [x] `RUSTFLAGS='-D warnings' cargo build --workspace --all-targets` is clean.
+
+## Stage 26, complete: per-field moved tracking for partial struct moves
+
+Scope: extend the lowering pass so that consuming one struct field deadens
+only that field, leaving the other fields live.
+
+Acceptance criteria:
+
+- [x] A move out of a non-scalar struct field (`let a = p.x;`) records a
+      partial move on the base binding's `moved_fields` vec. Reading the same
+      field again is rejected with a diagnostic that cites `SPEC.md` section 7.
+- [x] A partially-moved struct cannot be used by value (assigned, passed to
+      a call, or returned) — the `Ident` handler rejects a by-value read.
+- [x] Reading a different field of a partially-moved struct, or reading a
+      scalar field after a partial move, compiles.
+- [x] Scalar field reads remain copies; expression field reads
+      (`p.x + p.y`) remain borrows.
+- [x] `crates/vortexc/tests/ownership.rs` adds five real diagnostic
+      assertions (3 rejected, 2 allowed) with no placeholders or `#[ignore]`.
+- [x] `STAGE26.md` records the result.
+- [x] `SPEC.md` section 7 updated to describe per-field tracking.
+- [x] `STAGE25.md` corrected: the test count is five, not seven, and a named
+      test that was absent from CI is removed.
+- [x] `cargo test --workspace` passes with no regressions (267 tests).
+- [x] `cargo fmt --all --check` is clean.
+- [x] `RUSTFLAGS='-D warnings' cargo build --workspace --all-targets` is clean.
+
+`STAGE26.md` records the result.

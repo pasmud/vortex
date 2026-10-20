@@ -51,7 +51,7 @@ runtime effect yet, but the infrastructure is in place.
 
 ## Tests
 
-Seven new tests were added to `crates/vortexc/tests/ownership.rs`:
+Five new tests were added to `crates/vortexc/tests/ownership.rs`:
 
 Rejected:
 
@@ -65,8 +65,6 @@ Allowed:
 - `an_assignment_move_starts_a_new_owner` — `let q = p; q.x + q.y` compiles.
 - `consuming_a_scalar_field_by_a_call_does_not_move_the_struct` —
   `take(p.x); p.y` compiles; the field read is a copy.
-- `a_second_binding_of_a_scalar_after_assignment_is_allowed` —
-  `let q = n; let r = n;` compiles; `Int` is `Copy`.
 
 ## Evidence
 
@@ -81,3 +79,10 @@ leaves the other fields live) is not implemented. The current enforcement
 marks the whole struct binding moved when any non-scalar field is consumed,
 which is safe (no false negatives) but will produce false positives once v0.1
 gains non-scalar struct fields. This is recorded as a follow-up.
+
+## Correction (Stage 26)
+
+The original count of "seven new tests" was wrong. The pull request that
+merged Stage 25 added five tests, not seven, and the list above previously
+named a sixth test — `a_second_binding_of_a_scalar_after_assignment_is_allowed`
+— that was never committed to the test file. The count is corrected to five.

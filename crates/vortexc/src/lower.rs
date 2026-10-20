@@ -39,6 +39,7 @@ pub fn lower(program: &ast::Program) -> Result<ir::Program, LowerError> {
         arity: HashMap::new(),
         structs: HashMap::new(),
         enums: HashMap::new(),
+        field_base: false,
     };
 
     // Every name is collected before any body is lowered, so a call may refer
@@ -89,10 +90,14 @@ struct Lowerer {
     arity: HashMap<String, usize>,
     structs: HashMap<String, Vec<ast::Field>>,
     enums: HashMap<String, Vec<ast::Variant>>,
+    /// Whether the next identifier read is the base of a field access (`p.x`),
+    /// in which case a partial move of one field must not deaden the whole
+    /// binding. See `expr` — the `Ident` handler consults this flag.
+    field_base: bool,
 }
 
 /// What a name currently refers to.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Binding {
     slot: ir::Slot,
     /// Whether this binding may be assigned to. `SPEC.md` section 8 makes an
@@ -105,16 +110,39 @@ struct Binding {
     /// The scalar types are `Copy` in that section, so moving one copies it and
     /// the binding stays live; only the aggregate types make it dead.
     moved: bool,
+    /// The names of fields of this aggregate binding that have been moved out,
+    /// leaving the remaining fields still live (a partial move).
+    ///
+    /// A non-empty `moved_fields` means the whole binding is dead (it can no
+    /// longer be loaded by value — `take(p)`, `let q = p;`, `return p;`), but
+    /// reads of unmoved fields such as `p.y` after `take(p.x)` are still live.
+    /// When the binding is fully moved (`moved` is `true`) this stays empty;
+    /// when it is a scalar (`copyable` is `true`) this is always empty.
+    moved_fields: Vec<String>,
     /// Whether this binding holds a scalar, and so survives a move.
     copyable: bool,
     /// The element type when this binding holds a list, and `None` otherwise.
-    ///
-    /// This is computed when the binding is declared, from the initialiser:
-    /// a list literal or a repeat says what it produces, and anything else is
-    /// not a list. An index expression carries the type with it, so the
-    /// executor never has to recover it from the syntax, where it is not
-    /// present: `a[i]` has an `Int` index whatever `a` holds.
     element: Option<Element>,
+    /// The named type of this binding's value (e.g. `"P"` for a `P` struct),
+    /// used to resolve partial field moves: `self.structs` is keyed by type
+    /// name, not by the local variable that holds the value.
+    ty: String,
+}
+
+/// What a consuming site (a call argument or a `let` initializer) moves out
+/// of when it handles an expression by value.
+///
+/// A plain name `p` moves the whole binding (unless the binding is `Copy`).
+/// A field read `p.x` moves only the `x` field when the field holds a
+/// non-scalar aggregate; a scalar field is a copy and does not move anything
+/// (`SPEC.md` section 7). Complex expressions build a value the consumer
+/// receives without moving any binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MovedRef {
+    /// The whole binding named `name` was consumed by value.
+    Binding(String),
+    /// Only the `field` of the struct binding `base` was consumed by value.
+    Field { base: String, field: String },
 }
 
 /// The element type of a list, which the executor needs in order to read or
@@ -149,45 +177,6 @@ fn ir_expr_is_copyable(e: &ir::Expr) -> bool {
         | ir::Expr::Unary { .. } => true,
         _ => false,
     }
-}
-
-/// The names in a call's arguments whose values the call consumes.
-///
-/// A plain name is consumed: passing `p` to a call moves `p`. A field read of
-/// a plain-name struct is consumed only when the field holds a non-scalar
-/// value; a scalar field is `Copy` and reading it, even to hand it to a call,
-/// copies it without moving the struct (`SPEC.md` section 7). Complex
-/// arguments, such as arithmetic expressions, build a value the call consumes
-/// without any binding being moved.
-fn moved_names_in(structs: &HashMap<String, Vec<ast::Field>>, args: &[ast::Expr]) -> Vec<String> {
-    args.iter()
-        .filter_map(|a| match &a.kind {
-            ast::ExprKind::Ident(n) => Some(n.clone()),
-            ast::ExprKind::Field(base, field) => {
-                // A field read of a plain-name struct can be a move if the
-                // field holds an aggregate. Look the struct up so the field
-                // type decides: a scalar field copies, a non-scalar one
-                // moves.
-                if let ast::ExprKind::Ident(base_name) = &base.kind {
-                    if let Some(fields) = structs.get(base_name) {
-                        for f in fields {
-                            if f.name == *field {
-                                return if is_scalar_type(&f.ty) {
-                                    // Scalar field: a copy, not a move.
-                                    None
-                                } else {
-                                    // Non-scalar field: consumed by value.
-                                    Some(base_name.clone())
-                                };
-                            }
-                        }
-                    }
-                }
-                None
-            }
-            _ => None,
-        })
-        .collect()
 }
 
 /// Whether a value of this type survives being moved.
@@ -264,31 +253,45 @@ impl FnState {
     }
 
     fn lookup(&self, name: &str) -> Option<Binding> {
-        self.scopes.iter().rev().find_map(|s| s.get(name).copied())
+        self.scopes.iter().rev().find_map(|s| s.get(name).cloned())
     }
 
     /// Carries the moved flags of the scope at `depth` back to the scope that
     /// encloses it, so a move inside a loop body outlives the body.
     fn carry_moved_out(&mut self, depth: usize) {
-        let moved: Vec<(String, ir::Slot)> = self
+        struct MovedState {
+            name: String,
+            slot: ir::Slot,
+            fields: Vec<String>,
+        }
+        let moved: Vec<MovedState> = self
             .scopes
             .get(depth)
             .map(|scope| {
                 scope
                     .iter()
-                    .filter(|(_, b)| b.moved)
-                    .map(|(n, b)| (n.clone(), b.slot))
+                    .filter(|(_, b)| b.moved || !b.moved_fields.is_empty())
+                    .map(|(n, b)| MovedState {
+                        name: n.clone(),
+                        slot: b.slot,
+                        fields: b.moved_fields.clone(),
+                    })
                     .collect()
             })
             .unwrap_or_default();
         if moved.is_empty() {
             return;
         }
-        for (name, slot) in moved {
+        for m in moved {
             for scope in self.scopes[..depth].iter_mut().rev() {
-                if let Some(b) = scope.get_mut(&name) {
-                    if b.slot == slot && !b.copyable {
+                if let Some(b) = scope.get_mut(&m.name) {
+                    if b.slot == m.slot && !b.copyable {
                         b.moved = true;
+                        for f in &m.fields {
+                            if !b.moved_fields.contains(f) {
+                                b.moved_fields.push(f.clone());
+                            }
+                        }
                         break;
                     }
                 }
@@ -338,11 +341,27 @@ impl FnState {
         }
     }
 
-    /// Marks every aggregate in a list of names moved, as a call taking several
+    /// Marks a single field of a struct binding moved, deadening that field
+    /// while leaving the struct's other fields live (Stage 26 partial move).
+    fn mark_field_moved(&mut self, name: &str, field: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(b) = scope.get_mut(name) {
+                if !b.copyable && !b.moved_fields.contains(&field.to_string()) {
+                    b.moved_fields.push(field.to_string());
+                }
+                return;
+            }
+        }
+    }
+
+    /// Marks every consumed binding or field moved, as a call taking several
     /// arguments does.
-    fn mark_all_moved(&mut self, names: &[String]) {
-        for n in names {
-            self.mark_moved(n);
+    fn mark_all_moved(&mut self, consumed: &[MovedRef]) {
+        for m in consumed {
+            match m {
+                MovedRef::Binding(n) => self.mark_moved(n),
+                MovedRef::Field { base, field } => self.mark_field_moved(base, field),
+            }
         }
     }
 
@@ -377,16 +396,20 @@ impl Lowerer {
                         slot,
                         mutable: true,
                         moved: false,
+                        moved_fields: Vec::new(),
                         copyable,
                         element: element_from_name(p.ty.name()),
+                        ty: p.ty.name().to_string(),
                     }
                 } else {
                     Binding {
                         slot,
                         mutable: false,
                         moved: false,
+                        moved_fields: Vec::new(),
                         copyable,
                         element: element_from_name(p.ty.name()),
+                        ty: p.ty.name().to_string(),
                     }
                 },
             );
@@ -461,6 +484,44 @@ impl Lowerer {
         })
     }
 
+    /// What a consuming site (a call argument or a `let` initializer) moves
+    /// out of when it takes `e` by value.
+    ///
+    /// A plain name `p` moves the whole non-copyable binding; a field read
+    /// `p.x` moves only `x` when the field is a non-scalar aggregate; a
+    /// scalar field is a copy and moves nothing; everything else is a fresh
+    /// value that no binding owns.
+    fn moved_ref(&self, e: &ast::Expr, st: &FnState) -> Option<MovedRef> {
+        match &e.kind {
+            ast::ExprKind::Ident(name) => {
+                let b = st.lookup(name)?;
+                if b.copyable {
+                    None
+                } else {
+                    Some(MovedRef::Binding(name.clone()))
+                }
+            }
+            ast::ExprKind::Field(base, field) => {
+                if let ast::ExprKind::Ident(base_names) = &base.kind {
+                    let b = st.lookup(base_names)?;
+                    let fields = self.structs.get(&b.ty)?;
+                    let f = fields.iter().find(|f| f.name == *field)?;
+                    if is_scalar_type(&f.ty) {
+                        None
+                    } else {
+                        Some(MovedRef::Field {
+                            base: base_names.clone(),
+                            field: field.clone(),
+                        })
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn stmt(
         &mut self,
         s: &ast::Stmt,
@@ -483,22 +544,58 @@ impl Lowerer {
                         pos: s.pos,
                     });
                 }
-                // An assignment transfers ownership. `SPEC.md` section 7
-                // says assigning a value moves it, so a plain-name
-                // initializer deadens its source binding afterwards. A
-                // scalar source is `Copy` and is duplicated instead, so it
-                // survives: `mark_moved` skips scalars. The new binding
-                // inherits its `Copy` status from the source rather than
-                // from `ir_expr_is_copyable`, which treats every `Load` as
+                // An assignment transfers ownership. `SPEC.md` section 7 says
+                // assigning a value moves it, so the initializer deadens its
+                // source afterwards. A scalar source is `Copy` and is
+                // duplicated instead, so it survives: `mark_moved` skips
+                // scalars. A non-scalar struct field read is a partial move —
+                // only that field is deadened. The new binding inherits its
+                // `Copy` status from the source rather than from
+                // `ir_expr_is_copyable`, which treats every `Load` as
                 // copyable and would wrongly make a struct binding `Copy`.
-                let (init_name, init_copyable) = match &init.kind {
-                    ast::ExprKind::Ident(n) => (Some(n.as_str()), st.lookup(n).map(|b| b.copyable)),
-                    _ => (None, None),
+                let consumed = self.moved_ref(init, st);
+                let init_copyable: Option<bool> = match &init.kind {
+                    ast::ExprKind::Ident(n) => st.lookup(n).map(|b| b.copyable),
+                    ast::ExprKind::Field(base, field) => {
+                        if let ast::ExprKind::Ident(base_names) = &base.kind {
+                            st.lookup(base_names).and_then(|b| {
+                                self.structs.get(&b.ty).and_then(|fields| {
+                                    fields
+                                        .iter()
+                                        .find(|f| f.name == *field)
+                                        .map(|f| is_scalar_type(&f.ty))
+                                })
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
                 };
                 let value = self.expr(init, st)?;
-                if let Some(n) = init_name {
-                    st.mark_moved(n);
-                }
+                // Mark the consumed source after the initializer is evaluated,
+                // so the `Ident` / `Field` handlers can still read it (the
+                // field-base flag protects against a partial-move false
+                // positive).
+                match consumed {
+                    Some(MovedRef::Binding(n)) => st.mark_moved(&n),
+                    Some(MovedRef::Field { base, field }) => st.mark_field_moved(&base, &field),
+                    None => {}
+                };
+                // Determine the type name for the new binding, so that later
+                // partial field moves (`q.x`) can be resolved to a struct
+                // definition in `self.structs`.
+                let init_ty = if let Some(t) = ty {
+                    t.name().to_string()
+                } else {
+                    match &init.kind {
+                        ast::ExprKind::Record { ty: rty, .. } => rty.clone(),
+                        ast::ExprKind::Ident(n) => {
+                            st.lookup(n).map(|b| b.ty.clone()).unwrap_or_default()
+                        }
+                        _ => String::new(),
+                    }
+                };
                 let copyable = init_copyable.unwrap_or_else(|| ir_expr_is_copyable(&value));
                 let slot = st.alloc();
                 st.declare(
@@ -508,18 +605,22 @@ impl Lowerer {
                             slot,
                             mutable: true,
                             moved: false,
+                            moved_fields: Vec::new(),
                             copyable,
                             // The element type comes from the initialiser: a
                             // list literal or a repeat says what it produces.
                             element: element_of(init),
+                            ty: init_ty.clone(),
                         }
                     } else {
                         Binding {
                             slot,
                             mutable: false,
                             moved: false,
+                            moved_fields: Vec::new(),
                             copyable,
                             element: element_of(init),
+                            ty: init_ty,
                         }
                     },
                 );
@@ -589,8 +690,10 @@ impl Lowerer {
                         slot,
                         mutable: true,
                         moved: false,
+                        moved_fields: Vec::new(),
                         copyable: true,
                         element: Some(Element::Int),
+                        ty: "Int".to_string(),
                     },
                 );
                 let b = self.block_in_scope(body, st)?;
@@ -655,6 +758,20 @@ impl Lowerer {
             // A bare name is a variable read, or a call with no arguments.
             ast::ExprKind::Ident(name) => match st.lookup(name) {
                 Some(b) => {
+                    // A by-value read of a partially-moved aggregate is dead:
+                    // one or more fields are gone, so the struct can no longer
+                    // be loaded whole. A field-base read (`p.x`) is a borrow,
+                    // so it is allowed; the `Field` handler checks the specific
+                    // field instead.
+                    if !self.field_base && !b.moved_fields.is_empty() {
+                        return Err(LowerError {
+                            message: format!(
+                                "`{}` has had a field moved out and cannot be used by value; `SPEC.md` section 7 gives every value exactly one owner",
+                                name
+                            ),
+                            pos,
+                        });
+                    }
                     if b.moved && !b.copyable {
                         return Err(LowerError {
                             message: format!(
@@ -699,7 +816,8 @@ impl Lowerer {
                 // A call takes ownership of the values it is handed, so an
                 // aggregate argument is moved into it. A struct literal builds
                 // a new value and is not one.
-                let consumed = moved_names_in(&self.structs, args);
+                let consumed: Vec<MovedRef> =
+                    args.iter().filter_map(|a| self.moved_ref(a, st)).collect();
                 let target = self.call_target(callee, pos)?;
                 // A callee's arguments live in its own frame, so the caller
                 // reserves one slot per argument. Without this a function that
@@ -1081,7 +1199,27 @@ impl Lowerer {
                         });
                     }
                 }
+                // A field read borrows the struct: even a partially-moved
+                // binding is readable as long as the requested field has not
+                // itself been moved out.
+                if let ast::ExprKind::Ident(base_name) = &base.kind {
+                    if let Some(b) = st.lookup(base_name) {
+                        if !b.copyable && b.moved_fields.iter().any(|f| f == name) {
+                            return Err(LowerError {
+                                message: format!(
+                                    "`{}.{}` has been moved and cannot be used again; `SPEC.md` section 7 gives every value exactly one owner",
+                                    base_name, name
+                                ),
+                                pos,
+                            });
+                        }
+                    }
+                }
+                // Tell `Ident` that the base is a field base so a
+                // partially-moved aggregate does not trip the by-value check.
+                self.field_base = true;
                 let b = self.expr(base, st)?;
+                self.field_base = false;
                 ir::Expr::Field {
                     base: Box::new(b),
                     name: name.clone(),
@@ -1186,8 +1324,10 @@ impl Lowerer {
                             slot,
                             mutable: false,
                             moved: false,
+                            moved_fields: Vec::new(),
                             copyable: true,
                             element: Some(Element::Int),
+                            ty: "Int".to_string(),
                         },
                     );
                     slots.push(ir::Binding {
@@ -1209,10 +1349,12 @@ impl Lowerer {
                         slot,
                         mutable: false,
                         moved: false,
+                        moved_fields: Vec::new(),
                         copyable: true,
                         // A match binding is an Int or a Float payload in
                         // v0.1, so it is never a list.
                         element: None,
+                        ty: String::new(),
                     },
                 );
                 ir::Pattern::Binding(ir::Binding {
