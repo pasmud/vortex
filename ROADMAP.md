@@ -385,3 +385,12 @@ Acceptance criteria:
 - [x] `RUSTFLAGS='-D warnings' cargo build --workspace --all-targets` is clean.
 
 `STAGE26.md` records the result.
+
+## Stage 27: the `as` cast operator
+
+The `as` cast was already implemented across the parser, lowerer, checker,
+tree interpreter, bytecode compiler and VM. Stage 27 closes the documentation
+gap: the checker diagnostic now cites `SPEC.md` section 6.1 rule 4 on rejection,
+`SPEC.md` section 8.2 notes the implemented subset, `DIAGNOSTICS.md` lists the
+rejected-cast diagnostic, and the benchmark harness docs are corrected.
+STAGE27.md records the result.

@@ -528,7 +528,7 @@ impl<'a> Checker<'a> {
                 if !ok {
                     return Err(TypeError {
                         message: format!(
-                            "cannot cast `{}` to `{}`; the only casts are between `Int`, `Float` and `Char`",
+                            "cannot cast `{}` to `{}`; `SPEC.md` section 6.1 rule 4 allows only casts between `Int`, `Float` and `Char`",
                             self.name_of(&from),
                             self.name_of(&target)
                         ),

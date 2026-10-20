@@ -266,6 +266,27 @@ fn the_compiled_path_gets_the_expected_answer_not_just_the_same_one() {
     assert_eq!(tree(&program(25)), "5525");
 }
 
+// ---------------------------------------------------------------- as cast
+
+#[test]
+fn a_cast_produces_the_same_output_on_all_three_paths() {
+    // The `as` cast moves between Int and Float. All three execution paths
+    // must agree: Int -> Float preserves the value, Float -> Int truncates
+    // toward zero.
+    let src = "fn main() {
+        println(float_to_string(7 as Float));
+        println(int_to_string(3.7 as Int));
+    }";
+    let tree = tree_stdout(src);
+    let vm = vm_stdout(src);
+    assert_eq!(tree, "7.000000\n3", "the tree interpreter's own answer");
+    assert_eq!(vm, "7.000000\n3", "the VM's own answer");
+    match compiled_stdout(src, "main") {
+        Ok(out) => assert_eq!(out, "7.000000\n3", "the compiled path at -O2 and -O0"),
+        Err(e) => panic!("the cast should compile and run: {}", e),
+    }
+}
+
 // ---------------------------------------------------------------- what it does not do
 
 #[test]

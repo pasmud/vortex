@@ -121,6 +121,7 @@ asks for.
 | Diagnostic | Notes |
 | --- | --- |
 | an arithmetic operator applied to `Int` and `Float` | points at the operator, and the message cites rule 4 |
+| a cast between unrelated types (e.g. `Str` to `Int`, `Char` to `Float`) | points at `as`, and the message cites rule 4 |
 | a comparison of `Int` with `Float` | points at the operator |
 | a subtraction or assignment mixing the two | points at the operator |
 
