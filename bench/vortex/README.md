@@ -27,14 +27,13 @@ Masking rather than widening the language type is deliberate. A Vortex program
 that wants the true sum should not have to imitate a C overflow to interoperate
 with one.
 
-**The floating point half is absent.** The baseline checksum
+**The matrix multiply now runs.** The baseline checksum
 `1179908154 3314.003906` covers a sieve and a floating point matrix multiply.
-Vortex cannot write the matrix multiply, because there is no `as` cast and
-`SPEC.md` section 6.1 rule 4 forbids the implicit `Int` to `Float` conversion.
-The Vortex row therefore covers the sieve only. The harness compares the integer
-part of the checksum, which is the same in all three, and `BENCHMARKS.md` says
-plainly that the floating point half is missing rather than implying the rows
-measure the same thing.
+Vortex can now write the matrix multiply because `SPEC.md` section 6.1 rule 4
+allows an explicit `as` cast between `Int` and `Float`. The sieve file uses it
+where an `Int` expression needs to become a `Float`:
+`a[i * n + j] = ((i + j) % 17) as Float;`. The Vortex row therefore covers the
+whole workload, and all three paths print the full checksum.
 
 ## What made it run at all
 
@@ -62,20 +61,14 @@ and one owner per list, which is what `SPEC.md` section 7 requires. The cell is
 that its call depth guard can report a runaway recursion instead of exhausting
 the machine stack.
 
-## What stage 4 should do with this
+## What stage 4 did next
 
-2780 ms against 18 ms for C is the number to beat, and it is about 155 times
-slower. That gap is the interpreter, not the arithmetic: every step walks the
-tree and dispatches again.
-
-- **The bytecode VM** is the obvious next step. The frontend already lowers once
-  to `crates/vortexc/src/ir.rs`, which is exactly what a register machine
-  consumes, so this is a new executor rather than a rewrite.
-- **A disassembly command** would make the bytecode inspectable, which is how a
-  later stage can tell what it is actually emitting.
-- **Keep the checksum discipline.** When the Vortex row gains a Float half it
-  must print the full `1179908154 3314.003906`, and `bench/run.sh` already
-  refuses to print a time for a row whose checksum does not match.
+2780 ms against 18 ms for C is the gap the bytecode VM closed. That gap was the
+interpreter, not the arithmetic: every step walks the tree and dispatches again.
+The frontend already lowers once to `crates/vortexc/src/ir.rs`, which is exactly
+what a register machine consumes, so the VM is a new executor rather than a
+rewrite. Its time and checksum are recorded in `BENCHMARKS.md`, and all three
+paths now print the full `1179908154 3314.003906`.
 
 ## What was deliberately not done
 

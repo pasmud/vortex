@@ -518,11 +518,11 @@ fn casting_between_two_identical_types_is_allowed() {
 
 #[test]
 fn casting_a_string_to_an_int_is_rejected() {
-    assert_at(
-        "fn main() {\n    let n = \"text\" as Int;\n}",
-        2,
-        20,
-        "cannot cast `Str` to `Int`",
+    let src = "fn main() {\n    let n = \"text\" as Int;\n}";
+    assert_at(src, 2, 20, "cannot cast `Str` to `Int`");
+    assert!(
+        type_error(src).contains("section 6.1 rule 4"),
+        "the rejected cast diagnostic must cite SPEC.md section 6.1 rule 4"
     );
 }
 
@@ -530,12 +530,11 @@ fn casting_a_string_to_an_int_is_rejected() {
 fn casting_a_char_directly_to_a_float_is_rejected() {
     // Only Int to Float and Char to Int are legal, not Char to Float, because
     // there would be no reason to prefer it over writing two casts.
-    assert_at(
-        // The diagnostic points at `as`, which starts at column 57.
-        "fn f(x: Float) -> Float { return x; } fn main() { f('A' as Float); }",
-        1,
-        57,
-        "cannot cast `Char` to `Float`",
+    let src = "fn f(x: Float) -> Float { return x; } fn main() { f('A' as Float); }";
+    assert_at(src, 1, 57, "cannot cast `Char` to `Float`");
+    assert!(
+        type_error(src).contains("section 6.1 rule 4"),
+        "the rejected cast diagnostic must cite SPEC.md section 6.1 rule 4"
     );
 }
 

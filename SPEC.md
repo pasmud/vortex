@@ -378,11 +378,12 @@ building the benchmark workload.
 - **A list of a computed length works.** `[value; count]` builds a list of
   `count` copies of `value`. The count must be an `Int` and the type of the
   list is the type of the repeated value, so every element still has one type.
-- **There is no `as` cast.** Section 6.1 rule 4 and section 6.3 both refer to
-  one. Until it exists there is no way between an `Int` and a `Float`, which is
-  why the Vortex benchmark row covers the sieve only and not the baseline's
-  floating point matrix multiply. The benchmark compares the integer part of
-  the checksum, which matches, and `BENCHMARKS.md` states the omission.
+- **`as` casts are implemented.** Section 6.1 rule 4 requires numeric
+  conversions to be written explicitly with `as`. The checker allows `Int`
+  to `Float`, `Float` to `Int`, `Int` to `Char` and `Char` to `Int`; all
+  other pairs are rejected with a diagnostic that cites the rule. This is
+  how the benchmark workload moves between `Int` and `Float` in the matrix
+  multiply.
 - **There is no `Option` or `Result` construction.** Rules 5 and 6 of section
   6.1 describe them. `?` is accepted by the parser and typed by the checker,
   but there is no way to write `none`, `some`, `ok` or `err` yet.

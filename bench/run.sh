@@ -66,11 +66,8 @@ else
     RUST_VERSION="not available"
 fi
 
-# The Vortex row stays empty. A Vortex program exists at bench/vortex/sieve.vx
-# and is correct, but it cannot produce a comparable time for two measured
-# reasons recorded in bench/vortex/README.md: the baseline checksum covers a
-# Float matrix multiply that Vortex cannot write yet, and the sieve half does
-# not finish in usable time in a tree interpreter.
+# The Vortex workload now covers the full sieve plus the Float matrix multiply,
+# using the `as` cast added for section 6.1 rule 4 (see bench/vortex/README.md).
 # The Vortex workload is run through the interpreter, so it needs the compiler
 # built first and a small runner to feed it the program.
 VORTEX_STATUS="skipped: no cargo found"
