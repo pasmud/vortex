@@ -135,6 +135,17 @@ impl TypeExpr {
             TypeExpr::Generic(_, args) => args,
         }
     }
+
+    /// A human-readable representation, e.g. `Wrapper[Int]` or `Int`.
+    pub fn to_string(&self) -> String {
+        match self {
+            TypeExpr::Named(n) => n.clone(),
+            TypeExpr::Generic(n, args) => {
+                let parts: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                format!("{}[{}]", n, parts.join(", "))
+            }
+        }
+    }
 }
 
 /// A struct declaration.
@@ -180,6 +191,7 @@ pub enum StmtKind {
     Let {
         name: String,
         mutable: bool,
+        ty: Option<TypeExpr>,
         init: Expr,
     },
     /// `return e;`

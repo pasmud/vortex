@@ -630,12 +630,18 @@ impl<'a> Parser<'a> {
             let keyword = if mutable { "var" } else { "let" };
             self.advance();
             let name = self.expect_ident(&format!("a name after `{}`", keyword))?;
+            let ty = if self.eat(&Tok::Colon) {
+                Some(self.type_expr()?)
+            } else {
+                None
+            };
             self.expect(Tok::Assign)?;
             let init = self.expr()?;
             self.expect_semicolon()?;
             StmtKind::Let {
                 name,
                 mutable,
+                ty,
                 init,
             }
         } else if self.at_keyword("return") {

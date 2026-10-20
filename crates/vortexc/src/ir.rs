@@ -20,6 +20,7 @@
 //!   the programmer wrote.
 
 use crate::ast;
+use crate::ast::TypeExpr;
 use crate::span::Pos;
 
 /// A lowered program.
@@ -86,6 +87,7 @@ pub enum Stmt {
     Let {
         slot: Slot,
         init: Expr,
+        ty: Option<TypeExpr>,
         pos: Pos,
     },
     Assign {
