@@ -103,6 +103,10 @@ Move enforcement is also partial. A move by assignment and a move out of a
 live struct field are not tracked. Both are limits of what the lowering pass
 decides syntactically today.
 
+> Resolved in Stage 25: the lowering pass now records assignment moves
+> (`let q = p;`) and field moves for non-scalar fields, deadening the
+> source binding and rejecting a subsequent use with a diagnostics.
+
 ## Stage 7, complete: carry the sieve workload through the compiler
 
 Scope: extend the emitter until it carries the real benchmark workload, then
@@ -162,7 +166,7 @@ The prediction held on correctness and was too pessimistic on cost. Building the
 examples at -O0 also found a real defect that -O2 was repairing. `STAGE10.md`
 records it.
 
-## Stage 11, active: emit `match` and close what the emitter cannot carry
+## Stage 11, complete: emit `match` and close what the emitter cannot carry
 
 Scope: a language whose compiled path cannot compile three of its own four
 examples is not usable.
@@ -309,3 +313,47 @@ Acceptance criteria:
   `RUSTFLAGS=-D warnings` are clean.
 
 `STAGE23.md` records the result.
+
+## Stage 24, complete: fix documentation for move-after-use enforcement
+
+Merged in pull request #41.
+
+Scope: Stage 6 implemented move-after-use enforcement, but Stage 23's review left
+the documentation claiming it was unimplemented. This stage corrected the record.
+
+Acceptance criteria:
+
+- [x] `STAGE23.md` status is marked complete.
+- [x] `SPEC.md` section 7.2 updated to say enforcement is implemented.
+- [x] `DIAGNOSTICS.md` updated: a `mono` stage is listed, generics are marked
+      checked, and move-semantics is marked implemented.
+- [x] `ROADMAP.md` gains this Stage 24 entry.
+- [x] `ownership.rs` module doc records the enforcement location.
+- [x] `cargo test --workspace` passes, `cargo fmt --all --check` is clean, and
+      `RUSTFLAGS='-D warnings' cargo build --workspace --all-targets` is clean.
+
+## Stage 25, complete: complete move-after-use enforcement
+
+Scope: extend the lowering pass to track the two move forms that Stage 6 left
+untracked, closing the gap in the memory-safety model.
+
+Acceptance criteria:
+
+- [x] A move by assignment (`let q = p;`) deadens the source binding `p`. A
+      subsequent use of `p` is rejected with a "has been moved" diagnostic that
+      names the binding, cites `SPEC.md` section 7, and reports `line:column`.
+- [x] A scalar bound by assignment (`let q = n;`) is a copy, not a move. `n` is
+      still usable afterwards.
+- [x] The new binding after an assignment move (`let q = p; q.x`) owns the value
+      and can be used.
+- [x] A struct field read consumed by a function call (`take(p.x)`) where the
+      field is a scalar stays a copy: the struct is not moved and `p.y` is still
+      usable. Non-scalar fields are marked moved on consumption.
+- [x] `crates/vortexc/tests/ownership.rs` adds tests with real diagnostic
+      assertions (no placeholders, no `#[ignore]`).
+- [x] `STAGE25.md` records the result.
+- [x] `SPEC.md` section 7 updated to cite the Stage 25 extension.
+- [x] `ROADMAP.md` marks Stage 11 complete and adds this Stage 25 entry.
+- [x] `cargo test --workspace` passes with no regressions (262 tests).
+- [x] `cargo fmt --all --check` is clean.
+- [x] `RUSTFLAGS='-D warnings' cargo build --workspace --all-targets` is clean.

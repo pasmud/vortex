@@ -7,7 +7,8 @@
 //! move. These tests pin those diagnostics and check that
 //! `examples/ownership.vx` runs on both engines and prints the same thing.
 //!
-//! `STAGE06.md` and `STAGE24.md` record the result.
+//! `STAGE06.md`, `STAGE24.md` and `STAGE25.md` record the move-semantics stages.
+//! Stage 25 extends the enforcement to assignment moves and field moves.
 
 use vortexc::{run_on_vm, run_source, Error};
 
@@ -305,6 +306,125 @@ fn moving_an_aggregate_and_not_using_it_again_is_allowed() {
             vortexc::interp::display(&result.unwrap()),
             "7",
             "{:?} should compile",
+            engine
+        );
+    }
+}
+
+// ---------------------------------------------------------------- assignment moves
+//
+// Stage 25 extends the model so that assignment — `let q = p;` — also
+// transfers ownership, not only `take(p)`. A struct is dead after being
+// assigned; a scalar is copied. These pin the two cases.
+
+/// An aggregate that is bound to a new name by assignment is dead afterwards,
+/// just as it would be after a call. `SPEC.md` section 7: assigning a value
+/// moves it.
+#[test]
+fn an_assignment_move_deadens_the_source() {
+    let src = "struct P { x: Int, y: Int }
+               fn main() -> Int { let p = P { x: 1, y: 2 }; let q = p; return p.x; }";
+    for engine in ENGINES {
+        let e = rejects(engine, src);
+        let text = e.to_string();
+        assert!(
+            text.contains("`p` has been moved and cannot be used again"),
+            "{:?} should reject the use after assignment move, said {:?}",
+            engine,
+            text
+        );
+        assert!(
+            text.contains("section 7"),
+            "the diagnostic must cite section 7, said {:?}",
+            text
+        );
+        assert!(
+            text.contains("2:"),
+            "the diagnostic must name the line, said {:?}",
+            text
+        );
+    }
+}
+
+/// A second binding for an already-assigned value is rejected by the same rule.
+#[test]
+fn a_second_binding_after_an_assignment_move_is_rejected() {
+    let src = "struct P { x: Int, y: Int }
+               fn main() -> Int { let p = P { x: 1, y: 2 }; let q = p; let r = p; return q.x + r.y; }";
+    for engine in ENGINES {
+        let e = rejects(engine, src);
+        let text = e.to_string();
+        assert!(
+            text.contains("has been moved and cannot be used again"),
+            "{:?} should reject the second binding, said {:?}",
+            engine,
+            text
+        );
+        assert!(
+            text.contains("section 7"),
+            "the diagnostic must cite section 7, said {:?}",
+            text
+        );
+    }
+}
+
+/// A scalar is copied on assignment, so the old name is still live.
+#[test]
+fn a_scalar_is_copied_on_assignment() {
+    let src = "fn main() -> Int { let n = 21; let q = n; return q + n; }";
+    for engine in ENGINES {
+        let mut out = Vec::new();
+        let result = match engine {
+            Engine::Tree => run_source(src, &mut out),
+            Engine::Vm => run_on_vm(src, &mut out),
+        };
+        assert_eq!(
+            vortexc::interp::display(&result.unwrap()),
+            "42",
+            "{:?} should compile, Int is Copy on assignment",
+            engine
+        );
+    }
+}
+
+/// The new name after an assignment move owns the value, so it is fully usable.
+#[test]
+fn an_assignment_move_starts_a_new_owner() {
+    let src = "struct P { x: Int, y: Int }
+               fn main() -> Int { let p = P { x: 1, y: 2 }; let q = p; return q.x + q.y; }";
+    for engine in ENGINES {
+        let mut out = Vec::new();
+        let result = match engine {
+            Engine::Tree => run_source(src, &mut out),
+            Engine::Vm => run_on_vm(src, &mut out),
+        };
+        assert_eq!(
+            vortexc::interp::display(&result.unwrap()),
+            "3",
+            "{:?} should compile, the new binding owns the value",
+            engine
+        );
+    }
+}
+
+/// A scalar field read consumed by a call copies the scalar, so the struct is
+/// not moved and its other field is still readable. `SPEC.md` section 7 says a
+/// field read borrows rather than moves.
+#[test]
+fn consuming_a_scalar_field_by_a_call_does_not_move_the_struct() {
+    let src = "struct P { x: Int, y: Int }
+               fn take(n: Int) -> Int { return n; }
+               fn main() -> Int { let p = P { x: 1, y: 2 }; take(p.x); return p.y; }";
+    for engine in ENGINES {
+        let mut out = Vec::new();
+        let result = match engine {
+            Engine::Tree => run_source(src, &mut out),
+            Engine::Vm => run_on_vm(src, &mut out),
+        };
+        assert_eq!(
+            vortexc::interp::display(&result.unwrap()),
+            "2",
+            "{:?} should compile, a scalar field read is a copy not a move",
             engine
         );
     }

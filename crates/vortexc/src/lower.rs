@@ -153,20 +153,38 @@ fn ir_expr_is_copyable(e: &ir::Expr) -> bool {
 
 /// The names in a call's arguments whose values the call consumes.
 ///
-/// Only a plain name and a field read of a plain name are recognised, because
-/// those are the forms whose ownership can be decided syntactically. Anything
-/// more complex, such as an arithmetic expression, builds a value that the call
-/// consumes without any binding being moved.
-fn moved_names_in(args: &[ast::Expr]) -> Vec<String> {
+/// A plain name is consumed: passing `p` to a call moves `p`. A field read of
+/// a plain-name struct is consumed only when the field holds a non-scalar
+/// value; a scalar field is `Copy` and reading it, even to hand it to a call,
+/// copies it without moving the struct (`SPEC.md` section 7). Complex
+/// arguments, such as arithmetic expressions, build a value the call consumes
+/// without any binding being moved.
+fn moved_names_in(structs: &HashMap<String, Vec<ast::Field>>, args: &[ast::Expr]) -> Vec<String> {
     args.iter()
         .filter_map(|a| match &a.kind {
             ast::ExprKind::Ident(n) => Some(n.clone()),
-            // A field read is not a move. `SPEC.md` section 7 gives the
-            // struct its own fields, and reading one copies the field, which
-            // for every field type in v0.1 is a scalar. Marking the base moved
-            // here rejected `p.x` followed by `p.y`, which is a program that
-            // should compile.
-            ast::ExprKind::Field(..) => None,
+            ast::ExprKind::Field(base, field) => {
+                // A field read of a plain-name struct can be a move if the
+                // field holds an aggregate. Look the struct up so the field
+                // type decides: a scalar field copies, a non-scalar one
+                // moves.
+                if let ast::ExprKind::Ident(base_name) = &base.kind {
+                    if let Some(fields) = structs.get(base_name) {
+                        for f in fields {
+                            if f.name == *field {
+                                return if is_scalar_type(&f.ty) {
+                                    // Scalar field: a copy, not a move.
+                                    None
+                                } else {
+                                    // Non-scalar field: consumed by value.
+                                    Some(base_name.clone())
+                                };
+                            }
+                        }
+                    }
+                }
+                None
+            }
             _ => None,
         })
         .collect()
@@ -465,8 +483,23 @@ impl Lowerer {
                         pos: s.pos,
                     });
                 }
+                // An assignment transfers ownership. `SPEC.md` section 7
+                // says assigning a value moves it, so a plain-name
+                // initializer deadens its source binding afterwards. A
+                // scalar source is `Copy` and is duplicated instead, so it
+                // survives: `mark_moved` skips scalars. The new binding
+                // inherits its `Copy` status from the source rather than
+                // from `ir_expr_is_copyable`, which treats every `Load` as
+                // copyable and would wrongly make a struct binding `Copy`.
+                let (init_name, init_copyable) = match &init.kind {
+                    ast::ExprKind::Ident(n) => (Some(n.as_str()), st.lookup(n).map(|b| b.copyable)),
+                    _ => (None, None),
+                };
                 let value = self.expr(init, st)?;
-                let copyable = ir_expr_is_copyable(&value);
+                if let Some(n) = init_name {
+                    st.mark_moved(n);
+                }
+                let copyable = init_copyable.unwrap_or_else(|| ir_expr_is_copyable(&value));
                 let slot = st.alloc();
                 st.declare(
                     name,
@@ -666,7 +699,7 @@ impl Lowerer {
                 // A call takes ownership of the values it is handed, so an
                 // aggregate argument is moved into it. A struct literal builds
                 // a new value and is not one.
-                let consumed = moved_names_in(args);
+                let consumed = moved_names_in(&self.structs, args);
                 let target = self.call_target(callee, pos)?;
                 // A callee's arguments live in its own frame, so the caller
                 // reserves one slot per argument. Without this a function that

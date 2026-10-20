@@ -233,17 +233,19 @@ read. When the owner's scope ends, the value is deallocated immediately and
 deterministically. Values that are scalars or aggregates of scalars are `Copy`
 and are duplicated on assignment instead of moved.
 
-**Enforced since stage 6.** Reading a binding whose value has been moved is an
-error naming the binding, the position and this section. The lowering pass
-records a move when an aggregate is handed to a call, and a block carries its
-moved flags out to the enclosing scope, so a move inside a loop body outlives the
-body and a second move there is caught.
+**Enforced since stage 6, extended in stage 25.** Reading a binding whose value
+has been moved is an error naming the binding, the position and this section. The
+lowering pass records a move when an aggregate is handed to a call or bound to a
+new name by assignment (`let q = p;`), and a block carries its moved flags out to
+the enclosing scope, so a move inside a loop body outlives the body and a second
+move there is caught. A use of a dead binding after an assignment move is
+rejected with the same diagnostic.
 
 Two forms are deliberately **not** moves. A scalar is `Copy`, so `take(n)`
-followed by `n` is fine. A field read is not a move either, because the struct
-keeps its own fields and reading one copies it, so `p.x` followed by `p.y` is
-fine. Both were false positives while this was being written and both are pinned
-by tests.
+followed by `n` is fine, as is `let q = n;` followed by `n`. A field read is
+not a move either, because the struct keeps its own fields and reading one
+copies it, so `p.x` followed by `p.y` is fine. Both were false positives while
+this was being written and both are pinned by tests.
 
 ### 7.1 Why this and not the alternatives
 
@@ -287,9 +289,9 @@ benchmark exists, so Option A stands and no collector is adopted.
 What the model does and does not give is stated plainly rather than implied.
 Every value has one binding and one owner, and a store into a list changes the
 list in place, which `examples/ownership.vx` demonstrates. **Enforcement is
-implemented in stage 6**: a use after a move is an error that names the binding,
-the line and column, and cites this section. Scalars are `Copy` and are not
-moved; struct field reads borrow rather than move. `crates/vortexc/tests/ownership.rs`
+implemented in stages 6 and 25**: a use after a move is an error that names the
+binding, the line and column, and cites this section. Scalars are `Copy` and are
+not moved; struct field reads borrow rather than move. `crates/vortexc/tests/ownership.rs`
 pins the diagnostics, and `examples/ownership.vx` prints the same output on both
 the tree interpreter and the VM.
 
