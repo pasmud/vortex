@@ -394,3 +394,30 @@ gap: the checker diagnostic now cites `SPEC.md` section 6.1 rule 4 on rejection,
 `SPEC.md` section 8.2 notes the implemented subset, `DIAGNOSTICS.md` lists the
 rejected-cast diagnostic, and the benchmark harness docs are corrected.
 STAGE27.md records the result.
+
+## Stage 28: emitter handles lists of named struct and enum types
+
+Stage 28 extends the emitter (compiled-to-C path) to correctly handle lists of
+named struct and enum types. The existing code only recognized `Int`, `Float`
+and `Str` element types; structs and enums defaulted to `int64_t`, truncating
+their fields with no diagnostic.
+
+Acceptance criteria:
+
+- [x] `a_list_of_a_struct_runs_on_all_three_paths` — list of a named struct with
+      `Int`+`Float` fields, element type preserved, all three paths agree
+- [x] `a_variant_with_mixed_payload_types_runs_on_all_three_paths` — enum
+      variant with mixed payload types, tag + union C representation, all three
+      paths agree
+- [x] `a_list_of_named_enum_variants_runs_on_all_three_paths` — list of named
+      enum variants, element type preserved, all three paths agree
+- [x] `STAGE28.md` records the result, emitter changes, and all acceptance
+      criteria
+- [x] `cargo test --workspace` passes with no regressions (268 tests)
+- [x] `cargo fmt --all --check` is clean
+- [x] `RUSTFLAGS='-D warnings' cargo build --workspace --all-targets` is clean
+- [x] `scripts/check-examples.sh` passes, all examples identical on all paths
+- [x] `scripts/check-benchmarks.sh` passes
+
+`STAGE28.md` records the result, including the three differential tests and the
+emitter changes.

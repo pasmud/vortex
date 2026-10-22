@@ -907,6 +907,112 @@ fn a_list_of_bools_compiles_and_runs() {
     }
 }
 
+/// A list of a named struct runs on all three paths, not just emits C.
+///
+/// STAGE11.md found that a list of a named struct defaulted to `int64_t` for
+/// its element type, so a `Float` field truncated with no diagnostic. The
+/// existing test `a_list_of_a_struct_keeps_its_float_field` checks the emitted C
+/// text only. This one runs the program on the tree interpreter, the VM and the
+/// compiled path at -O2 and -O0, and checks the printed answer.
+#[test]
+fn a_list_of_a_struct_runs_on_all_three_paths() {
+    let src = "struct P { x: Int, y: Float }
+               fn main() {
+                   var ps = [P { x: 1, y: 2.5 }, P { x: 3, y: 4.5 }];
+                   ps[0] = P { x: 7, y: 8.75 };
+                   println(int_to_string(ps[0].x));
+                   println(float_to_string(ps[0].y));
+                   println(float_to_string(ps[1].y));
+               }";
+    assert_eq!(
+        tree_stdout(src),
+        "7\n8.750000\n4.500000",
+        "the tree interpreter"
+    );
+    assert_eq!(vm_stdout(src), "7\n8.750000\n4.500000", "the VM");
+    match compiled_stdout(src, "main") {
+        Ok(out) => assert_eq!(
+            out, "7\n8.750000\n4.500000",
+            "the compiled path at -O2 and -O0"
+        ),
+        Err(e) => panic!("a list of a struct should compile and run: {}", e),
+    }
+}
+
+/// A variant whose payload fields differ in type runs on all three paths.
+///
+/// STAGE11.md found that a variant with mixed payload types was refused by name
+/// because the emitter could not put different types in a C array. The existing
+/// test `a_variant_with_mixed_payload_types_is_carried` checks the emitted C
+/// text only. This one runs the program on all three paths and checks the
+/// answer, exercising both the field read and the field write through a match.
+#[test]
+fn a_variant_with_mixed_payload_types_runs_on_all_three_paths() {
+    let src = "enum Pair { mixed { n: Int, r: Float } }
+               fn pick_n(p: Pair) -> Int {
+                   return match p { Pair.mixed { n, r } => n };
+               }
+               fn pick_r(p: Pair) -> Float {
+                   return match p { Pair.mixed { n, r } => r };
+               }
+               fn main() {
+                   let a = Pair.mixed { n: 5, r: 1.5 };
+                   let b = Pair.mixed { n: 7, r: 1.5 };
+                   println(int_to_string(pick_n(a)));
+                   println(float_to_string(pick_r(b)));
+               }";
+    assert_eq!(tree_stdout(src), "5\n1.500000", "the tree interpreter");
+    assert_eq!(vm_stdout(src), "5\n1.500000", "the VM");
+    match compiled_stdout(src, "main") {
+        Ok(out) => assert_eq!(out, "5\n1.500000", "the compiled path at -O2 and -O0"),
+        Err(e) => panic!("a mixed payload variant should compile and run: {}", e),
+    }
+}
+
+/// A list of named enum variants runs on all three paths.
+///
+/// The `structlist.vx` example carries a list of one-named enums, which is the
+/// same defect class: the element type defaulted to `int64_t` and a `Float`
+/// payload truncated. This test uses literal syntax with mixed variants and
+/// reads each variant's payload field on all three paths.
+#[test]
+fn a_list_of_named_enum_variants_runs_on_all_three_paths() {
+    let src = "enum Shape {
+                   empty,
+                   circle(Float),
+                   sized { w: Float, h: Int },
+               }
+               fn area(s: Shape) -> Float {
+                   return match s {
+                       Shape.empty => 0.0,
+                       Shape.circle(r) => 3.14159265 * r * r,
+                       Shape.sized { w, h } => w * (h as Float),
+                   };
+               }
+               fn main() {
+                   var shapes = [Shape.circle(2.0), Shape.empty, Shape.sized { w: 3.0, h: 4 }];
+                   println(float_to_string(area(shapes[0])));
+                   println(float_to_string(area(shapes[1])));
+                   println(float_to_string(area(shapes[2])));
+               }";
+    assert_eq!(
+        tree_stdout(src),
+        "12.566371\n0.000000\n12.000000",
+        "the tree interpreter"
+    );
+    assert_eq!(vm_stdout(src), "12.566371\n0.000000\n12.000000", "the VM");
+    match compiled_stdout(src, "main") {
+        Ok(out) => assert_eq!(
+            out, "12.566371\n0.000000\n12.000000",
+            "the compiled path at -O2 and -O0"
+        ),
+        Err(e) => panic!(
+            "a list of named enum variants should compile and run: {}",
+            e
+        ),
+    }
+}
+
 /// A negative string index is rejected through the same path as one past the end.
 ///
 /// The bounds check was written for one direction of invalid, so a negative index
