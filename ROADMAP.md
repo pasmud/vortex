@@ -395,29 +395,31 @@ gap: the checker diagnostic now cites `SPEC.md` section 6.1 rule 4 on rejection,
 rejected-cast diagnostic, and the benchmark harness docs are corrected.
 STAGE27.md records the result.
 
-## Stage 28: emitter handles lists of named struct and enum types
+## Stage 28: differential tests for lists of named struct and enum types
 
-Stage 28 extends the emitter (compiled-to-C path) to correctly handle lists of
-named struct and enum types. The existing code only recognized `Int`, `Float`
-and `Str` element types; structs and enums defaulted to `int64_t`, truncating
-their fields with no diagnostic.
+Stage 28 closes the STAGE11.md inventory gap on lists of named struct and enum
+types. The emitter already resolves `list_element_type` through `c_type_named`
+to the C type of a declared struct or enum (from Stage 12), and already emits
+mixed-payload variants as tag + per-field struct rather than a flat C array
+(from Stage 13). Stage 28 adds the differential runtime tests that verify both
+behaviours across the compiled path, tree interpreter and VM at `-O2` and
+`-O0`, plus this documentation entry.
 
 Acceptance criteria:
 
 - [x] `a_list_of_a_struct_runs_on_all_three_paths` — list of a named struct with
       `Int`+`Float` fields, element type preserved, all three paths agree
 - [x] `a_variant_with_mixed_payload_types_runs_on_all_three_paths` — enum
-      variant with mixed payload types, tag + union C representation, all three
-      paths agree
+      variant with mixed payload types, tag + per-field struct C representation,
+      all three paths agree
 - [x] `a_list_of_named_enum_variants_runs_on_all_three_paths` — list of named
       enum variants, element type preserved, all three paths agree
-- [x] `STAGE28.md` records the result, emitter changes, and all acceptance
-      criteria
-- [x] `cargo test --workspace` passes with no regressions (268 tests)
+- [x] `STAGE28.md` records the result, the differential tests, and the evidence
+- [x] `cargo test --workspace` passes with no regressions (271 tests)
 - [x] `cargo fmt --all --check` is clean
 - [x] `RUSTFLAGS='-D warnings' cargo build --workspace --all-targets` is clean
 - [x] `scripts/check-examples.sh` passes, all examples identical on all paths
 - [x] `scripts/check-benchmarks.sh` passes
 
 `STAGE28.md` records the result, including the three differential tests and the
-emitter changes.
+emitter state they exercise.
