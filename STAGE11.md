@@ -96,8 +96,8 @@ than by trying every example.
 | `Str` builtins: `int_to_string`, `float_to_string`, `print`, `println` | yes | yes, `print` and `println` included |
 | **indexing a string** | yes | **no**, refused by name |
 | **string escapes beyond the basic ones** | yes | **no**, the emitter writes a literal as given |
-| **a list of a named struct or enum** | yes | **no**, `list_element_type` names only `Int`, `Float` and `Str`, so it is read at `int64_t` |
-| **an enum variant whose payload fields have different types** | yes | **no**, refused by name, because a C array cannot hold them |
+| **a list of a named struct or enum** | yes | yes, since Stage 12 (`list_element_type` delegates to `c_type_named`, which resolves a declared struct or enum to its C type) |
+| **an enum variant whose payload fields have different types** | yes | yes, since Stage 13 (tag + per-field struct, not a flat C array) |
 | **a match with no arms, or on a type the emitter cannot compare** | yes | **no**, refused by name |
 | **string `+` on a value the emitter cannot see is a string** | yes | **partly**, it is decided by the recorded bindings rather than the expression |
 | **inference, generics, closures, async, modules** | no | no |
@@ -106,6 +106,14 @@ The three rows in bold that are not the string index are the ones most likely to
 produce a wrong answer rather than a refusal, because each falls back to a
 default rather than declining. A list of a named struct is the one that would
 bite first in real code.
+
+Two of the three were closed after this inventory was written: a list of a named
+struct or enum by Stage 12, and an enum variant with mixed payload types by
+Stage 13. Both are verified by differential tests in Stage 28
+(`crates/vortexc/tests/compiled.rs`) that run the same program on the compiled
+path, the tree interpreter and the VM at `-O2` and `-O0` and compare stdout.
+The third, a match with no arms or on a type the emitter cannot compare, is still
+a refusal by name.
 
 ## What this stage does not claim
 
