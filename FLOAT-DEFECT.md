@@ -180,9 +180,10 @@ The lesson is recorded because the cost was three turns of this stage.
 
 ## State of the benchmark row
 
-The compiled row is still labelled `sieve only` in `STAGE7.md`, the Vortex row
-is still absent from `BENCHMARKS.md`, and the guard still requires that label.
-All three remain accurate, because the matrix half still disagrees.
+The compiled row in `BENCHMARKS.md` is now a full workload row, not labelled
+`sieve only`. `STAGE7.md` records why the label was accurate when it was written
+and why it was removed. The guard in `scripts/check-benchmarks.sh` requires the
+full checksum on that row and fails if the label reappears; it passes.
 
 ## What the next turn does
 
