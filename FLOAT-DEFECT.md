@@ -187,9 +187,9 @@ full checksum on that row and fails if the label reappears; it passes.
 
 ## What the next turn does
 
-All three of the above are done. The element type is recorded on
-`ir::Expr::Index` in the lowering pass, the read cast uses it, the emitter's own
-map covers the compiled path, and all three paths print
-`1179908154 3314.003906`. The remaining item is the benchmark row, which is
-still labelled `sieve only` in `STAGE7.md` and absent from `BENCHMARKS.md`
-because the matrix half still disagrees.
+All of the above are done. The element type is recorded on `ir::Expr::Index`
+in the lowering pass, the read cast uses it, the emitter's own map covers the
+compiled path, and all three paths print `1179908154 3314.003906`. The
+benchmark row is earned: it is a full workload row in `BENCHMARKS.md`, not
+labelled `sieve only`, and the guard in `scripts/check-benchmarks.sh` requires
+the full checksum on that row and passes.
